@@ -1,8 +1,9 @@
+import asyncio
 import json
 import os
 import subprocess
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -200,22 +201,62 @@ def search_docs(query_str: str, limit: int = 10, context: int = 2) -> list[Searc
     return results[:limit]
 
 
+async def run_single_ingestion_agent(content: str, filepath: Path, prompt_path: Path, config: dict) -> str | None:
+    """Run a single ingestion agent with a specific prompt. Returns the prompt name or None on failure."""
+    try:
+        prompt_template = prompt_path.read_text()
+        system_prompt = prompt_template.format(filepath=filepath)
+
+        options = ClaudeAgentOptions(
+            allowed_tools=config["allowed_tools"],
+            max_turns=config["max_turns"],
+            system_prompt=system_prompt,
+            model=config.get("model", "sonnet"),
+            cwd=str(WHORL_DIR),
+            permission_mode="acceptEdits",
+        )
+
+        async for message in query(prompt=content, options=options):
+            # Log agent messages for debugging
+            if hasattr(message, 'type'):
+                print(f"[{prompt_path.stem}] {message.type}: {getattr(message, 'content', '')[:100] if hasattr(message, 'content') else ''}")
+
+        return prompt_path.stem
+    except Exception as e:
+        import traceback
+        print(f"Agent {prompt_path.stem} failed: {e}")
+        traceback.print_exc()
+        return None
+
+
 async def run_ingestion_agent(content: str, filepath: Path, settings: dict) -> None:
+    """Run all ingestion agents in parallel."""
+    if not content or not content.strip():
+        return
+
     config = settings["ingestion_config"]
-    prompt_path = WHORL_DIR / config["prompt"]
-    prompt_template = prompt_path.read_text()
-    system_prompt = prompt_template.format(filepath=filepath)
+    prompts_dir = WHORL_DIR / config["prompts_dir"]
 
-    options = ClaudeAgentOptions(
-        allowed_tools=config["allowed_tools"],
-        max_turns=config["max_turns"],
-        system_prompt=system_prompt,
-        model=config.get("model", "sonnet"),
-        cwd=str(WHORL_DIR),
-    )
+    if not prompts_dir.exists():
+        return
 
-    async for _ in query(prompt=content, options=options):
-        pass
+    prompt_files = list(prompts_dir.glob("*.md"))
+    if not prompt_files:
+        return
+
+    tasks = [
+        run_single_ingestion_agent(content, filepath, prompt_path, config)
+        for prompt_path in prompt_files
+    ]
+    results = await asyncio.gather(*tasks)
+    agent_names = [name for name in results if name is not None]
+
+    # Update frontmatter with processed agents
+    file_content = filepath.read_text()
+    frontmatter, body = parse_frontmatter(file_content)
+    frontmatter["processed"] = sorted(agent_names)
+    yaml_frontmatter = yaml.dump(frontmatter, default_flow_style=False, allow_unicode=True)
+    filepath.write_text(f"---\n{yaml_frontmatter}---\n\n{body}")
 
 
 async def run_search_agent(query_str: str, settings: dict) -> str:
@@ -231,6 +272,7 @@ async def run_search_agent(query_str: str, settings: dict) -> str:
         system_prompt=system_prompt,
         model=config.get("model", "sonnet"),
         cwd=str(docs_dir),
+        permission_mode="acceptEdits",
     )
 
     result_text = ""
@@ -251,14 +293,14 @@ async def ingest(request: IngestRequest, x_api_key: str = Header(...)):
     settings = load_settings()
 
     doc_id = os.urandom(4).hex()
-    timestamp = datetime.utcnow().isoformat()
+    timestamp = datetime.now(timezone.utc).isoformat()
 
-    filename = f"{doc_id}.md"
     if request.title:
         safe_title = "".join(c if c.isalnum() or c in " -_" else "" for c in request.title)
         safe_title = safe_title.strip().replace(" ", "-")[:50]
-        if safe_title:
-            filename = f"{doc_id}-{safe_title}.md"
+        filename = f"{safe_title}-{doc_id}.md" if safe_title else f"{doc_id}.md"
+    else:
+        filename = f"{doc_id}.md"
 
     filepath = docs_dir / filename
 
@@ -387,6 +429,42 @@ async def update_doc(request: UpdateRequest, x_api_key: str = Header(...)):
 @router.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@router.get("/documents")
+async def list_docs(x_api_key: str = Header(...)):
+    """List all documents."""
+    verify_api_key(x_api_key)
+    docs_dir = get_docs_dir()
+    docs = []
+    for filepath in docs_dir.glob("*.md"):
+        content = filepath.read_text()
+        frontmatter, body = parse_frontmatter(content)
+        docs.append({
+            "id": frontmatter.get("id", filepath.stem),
+            "path": filepath.name,
+            "title": frontmatter.get("title"),
+            "created_at": frontmatter.get("created_at"),
+            "frontmatter": frontmatter,
+        })
+    docs.sort(key=lambda d: d.get("created_at") or "", reverse=True)
+    return {"docs": docs}
+
+
+@router.get("/documents/{path:path}")
+async def get_doc(path: str, x_api_key: str = Header(...)):
+    """Get a document's content."""
+    verify_api_key(x_api_key)
+    docs_dir = get_docs_dir()
+    filepath = docs_dir / path
+
+    # Security check
+    if not str(filepath.resolve()).startswith(str(docs_dir.resolve())):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail="Not found")
+
+    return {"content": filepath.read_text()}
 
 
 # Create temp app for MCP

@@ -15,6 +15,7 @@ const docs = ref<Doc[]>([])
 const filter = ref('')
 const selectedDoc = ref<Doc | null>(null)
 const docContent = ref('')
+const docFrontmatter = ref<Record<string, unknown>>({})
 const indexContent = ref('')
 const loading = ref(false)
 const searchQuery = ref('')
@@ -73,10 +74,12 @@ async function selectDoc(doc: Doc) {
   loading.value = true
   try {
     const content = await getDocContent(doc.path)
-    const { body } = parseMarkdown(content)
+    const { frontmatter, body } = parseMarkdown(content)
+    docFrontmatter.value = frontmatter
     docContent.value = body
   } catch (e) {
     docContent.value = 'Failed to load document.'
+    docFrontmatter.value = {}
   }
   loading.value = false
 }
@@ -290,6 +293,19 @@ onMounted(() => {
       </article>
 
       <article v-else-if="selectedDoc">
+        <header class="doc-header">
+          <h1 v-if="docFrontmatter.title">{{ docFrontmatter.title }}</h1>
+          <div class="doc-meta">
+            <span v-if="docFrontmatter.created_at" class="meta-item">
+              {{ new Date(docFrontmatter.created_at as string).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) }}
+            </span>
+            <span v-if="docFrontmatter.source" class="meta-item meta-source">{{ docFrontmatter.source }}</span>
+          </div>
+          <div v-if="docFrontmatter.tags" class="doc-tags">
+            <span v-for="tag in (docFrontmatter.tags as string[])" :key="tag" class="tag">{{ tag }}</span>
+          </div>
+          <p v-if="docFrontmatter.summary" class="doc-summary">{{ docFrontmatter.summary }}</p>
+        </header>
         <div class="markdown" v-html="renderMarkdown(docContent)"></div>
         <div class="doc-actions">
           <button @click="editDoc" class="edit-btn">Edit</button>
@@ -736,6 +752,57 @@ article h1 {
 .save-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.doc-header {
+  margin-bottom: 2rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px dotted #999;
+}
+
+.doc-header h1 {
+  font-family: "Inter", -apple-system, sans-serif;
+  font-size: 1.8rem;
+  font-weight: 500;
+  margin: 0 0 0.75rem;
+  color: #333;
+}
+
+.doc-meta {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.85rem;
+  color: #666;
+  margin-bottom: 0.75rem;
+}
+
+.meta-source {
+  background: rgba(0,0,0,0.06);
+  padding: 0.15rem 0.5rem;
+  border-radius: 3px;
+}
+
+.doc-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.tag {
+  font-size: 0.8rem;
+  background: #2a2520;
+  color: #fff;
+  padding: 0.2rem 0.6rem;
+  border-radius: 3px;
+}
+
+.doc-summary {
+  font-size: 0.95rem;
+  color: #555;
+  font-style: italic;
+  margin: 0;
+  line-height: 1.6;
 }
 
 .doc-actions {

@@ -1,14 +1,21 @@
 [project]
 name = "whorl"
 version = "0.1.0"
-description = "Add your description here"
+description = "Personal knowledge ingestion server"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "claude-agent-sdk>=0.1.18",
     "fastapi>=0.127.0",
     "fastmcp>=2.14.1",
+    "httpx>=0.28.1",
     "python-dotenv>=1.2.1",
     "pyyaml>=6.0.3",
     "uvicorn>=0.40.0",
 ]
+
+[project.scripts]
+whorl-upload = "whorl.cli:main"
+
+[tool.setuptools]
+packages = ["whorl"]

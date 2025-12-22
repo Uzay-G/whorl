@@ -55,42 +55,19 @@ async function request(endpoint: string, options: RequestInit = {}) {
 }
 
 export async function listDocs(): Promise<Doc[]> {
-  const { stdout } = await request('/bash', {
-    method: 'POST',
-    body: JSON.stringify({ command: 'ls -1 *.md 2>/dev/null || true' }),
-  })
-
-  const files = stdout.trim().split('\n').filter(Boolean)
-  const docs: Doc[] = []
-
-  for (const file of files) {
-    const content = await getDocContent(file)
-    const { frontmatter } = parseMarkdown(content)
-    docs.push({
-      id: frontmatter.id as string || file.replace('.md', ''),
-      path: file,
-      title: frontmatter.title as string || file.replace('.md', ''),
-      createdAt: frontmatter.created_at as string || undefined,
-      frontmatter,
-    })
-  }
-
-  // Sort by date, newest first
-  docs.sort((a, b) => {
-    if (!a.createdAt) return 1
-    if (!b.createdAt) return -1
-    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-  })
-
-  return docs
+  const { docs } = await request('/documents')
+  return docs.map((d: Record<string, unknown>) => ({
+    id: d.id as string,
+    path: d.path as string,
+    title: d.title as string || d.path as string,
+    createdAt: d.created_at as string || undefined,
+    frontmatter: d.frontmatter as Record<string, unknown>,
+  }))
 }
 
 export async function getDocContent(path: string): Promise<string> {
-  const { stdout } = await request('/bash', {
-    method: 'POST',
-    body: JSON.stringify({ command: `cat "${path}"` }),
-  })
-  return stdout
+  const { content } = await request(`/documents/${encodeURIComponent(path)}`)
+  return content
 }
 
 export async function search(query: string, limit = 10): Promise<SearchResult[]> {
