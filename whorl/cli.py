@@ -64,7 +64,10 @@ async def upload_file(client: httpx.AsyncClient, filepath: Path, api_url: str, a
         )
         resp.raise_for_status()
         data = resp.json()
-        print(f"  + {filepath.name} -> {data['path']}")
+        if data.get("duplicate"):
+            print(f"  = {filepath.name} (duplicate, skipped)")
+        else:
+            print(f"  + {filepath.name} -> {data['path']}")
         return True
     except httpx.HTTPStatusError as e:
         print(f"  x {filepath.name}: {e.response.status_code}")
@@ -94,7 +97,7 @@ async def async_main(args, api_key: str, files: list[Path], batch_size: int):
 
 def main():
     parser = argparse.ArgumentParser(description="Upload markdown files to whorl")
-    parser.add_argument("directory", type=Path, help="Directory containing .md files")
+    parser.add_argument("directory", nargs="?", type=Path, help="Directory containing .md files")
     parser.add_argument("--url", default="http://localhost:8000", help="Whorl API URL")
     parser.add_argument("--key", help="API key (or set WHORL_API_KEY env var)")
     parser.add_argument("--flat", "-f", action="store_true", help="Don't search recursively (default is recursive)")
@@ -110,6 +113,10 @@ def main():
     api_key = args.key or os.environ.get("WHORL_API_KEY")
     if not api_key:
         print("Error: API key required (--key or WHORL_API_KEY)")
+        sys.exit(1)
+
+    if not args.directory:
+        parser.print_help()
         sys.exit(1)
 
     if not args.directory.is_dir():

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -44,6 +45,49 @@ def get_docs_dir() -> Path:
     return WHORL_DIR / docs_path
 
 
+def compute_content_hash(content: str) -> str:
+    """Compute SHA256 hash of content."""
+    return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+
+HASH_INDEX_PATH = WHORL_DIR / "hash-index.json"
+
+
+def load_hash_index() -> dict[str, dict]:
+    """Load the hash index from disk."""
+    if HASH_INDEX_PATH.exists():
+        with open(HASH_INDEX_PATH) as f:
+            return json.load(f)
+    return {}
+
+
+def save_hash_index(index: dict[str, dict]) -> None:
+    """Save the hash index to disk."""
+    with open(HASH_INDEX_PATH, "w") as f:
+        json.dump(index, f, indent=2)
+
+
+def add_to_hash_index(content_hash: str, doc_id: str, path: str) -> None:
+    """Add a document to the hash index."""
+    index = load_hash_index()
+    index[content_hash] = {"id": doc_id, "path": path}
+    save_hash_index(index)
+
+
+def find_doc_by_hash(content_hash: str) -> dict | None:
+    """Find an existing doc by content hash. O(1) lookup."""
+    index = load_hash_index()
+    return index.get(content_hash)
+
+
+def remove_from_hash_index(content_hash: str) -> None:
+    """Remove a document from the hash index."""
+    index = load_hash_index()
+    if content_hash in index:
+        del index[content_hash]
+        save_hash_index(index)
+
+
 class IngestRequest(BaseModel):
     content: str
     metadata: dict[str, Any] | None = None
@@ -54,6 +98,8 @@ class IngestRequest(BaseModel):
 class IngestResponse(BaseModel):
     id: str
     path: str
+    duplicate: bool = False
+    content_hash: str
 
 
 class SearchRequest(BaseModel):
@@ -292,6 +338,18 @@ async def ingest(request: IngestRequest, x_api_key: str = Header(...)):
     docs_dir.mkdir(parents=True, exist_ok=True)
     settings = load_settings()
 
+    # Compute content hash and check for duplicates
+    content_hash = compute_content_hash(request.content)
+    existing = find_doc_by_hash(content_hash)
+
+    if existing:
+        return IngestResponse(
+            id=existing["id"],
+            path=existing["path"],
+            duplicate=True,
+            content_hash=content_hash,
+        )
+
     doc_id = os.urandom(4).hex()
     timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -307,6 +365,7 @@ async def ingest(request: IngestRequest, x_api_key: str = Header(...)):
     frontmatter = {
         "id": doc_id,
         "created_at": timestamp,
+        "content_hash": content_hash,
     }
     if request.title:
         frontmatter["title"] = request.title
@@ -317,10 +376,13 @@ async def ingest(request: IngestRequest, x_api_key: str = Header(...)):
     doc_content = f"---\n{yaml_frontmatter}---\n\n{request.content}"
     filepath.write_text(doc_content)
 
+    # Add to hash index
+    add_to_hash_index(content_hash, doc_id, filepath.name)
+
     if request.process:
         await run_ingestion_agent(request.content, filepath, settings)
 
-    return IngestResponse(id=doc_id, path=str(filepath))
+    return IngestResponse(id=doc_id, path=filepath.name, content_hash=content_hash)
 
 
 @router.post("/search", response_model=SearchResponse, tags=["mcp"])
@@ -387,6 +449,12 @@ async def delete_doc(request: DeleteRequest, x_api_key: str = Header(...)):
 
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="Document not found")
+
+    # Remove from hash index
+    content = filepath.read_text()
+    frontmatter, _ = parse_frontmatter(content)
+    if content_hash := frontmatter.get("content_hash"):
+        remove_from_hash_index(content_hash)
 
     filepath.unlink()
     return {"status": "deleted", "path": request.path}
