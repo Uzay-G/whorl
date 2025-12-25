@@ -1,27 +1,39 @@
 #!/usr/bin/env python3
-"""Upload markdown files from a directory to whorl."""
+"""Whorl CLI - upload and manage documents."""
 
 import argparse
 import asyncio
 import fnmatch
+import json
 import os
 import sys
 from pathlib import Path
 
 import httpx
+import yaml
+
+WHORL_DIR = Path.home() / ".whorl"
+SETTINGS_PATH = WHORL_DIR / "settings.json"
+
+
+def load_settings() -> dict:
+    """Load settings from ~/.whorl/settings.json."""
+    if SETTINGS_PATH.exists():
+        with open(SETTINGS_PATH) as f:
+            return json.load(f)
+    return {}
 
 
 def parse_frontmatter(content: str) -> tuple[dict, str]:
-    """Extract title from frontmatter if present."""
+    """Extract frontmatter from markdown content."""
     if content.startswith("---"):
         parts = content.split("---", 2)
         if len(parts) >= 3:
-            frontmatter = {}
-            for line in parts[1].strip().split("\n"):
-                if ":" in line:
-                    key, val = line.split(":", 1)
-                    frontmatter[key.strip()] = val.strip()
-            return frontmatter, parts[2].strip()
+            try:
+                frontmatter = yaml.safe_load(parts[1]) or {}
+                return frontmatter, parts[2].strip()
+            except yaml.YAMLError:
+                pass
     return {}, content
 
 
@@ -30,10 +42,8 @@ def matches_any(filepath: Path, patterns: list[str]) -> bool:
     name = filepath.name
     path_str = str(filepath)
     for pattern in patterns:
-        # Match filename, full path, or any path component
         if fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(path_str, pattern):
             return True
-        # Check if any parent directory matches (for excluding directories)
         for part in filepath.parts:
             if fnmatch.fnmatch(part, pattern):
                 return True
@@ -45,10 +55,7 @@ async def upload_file(client: httpx.AsyncClient, filepath: Path, api_url: str, a
     content = filepath.read_text()
     frontmatter, body = parse_frontmatter(content)
 
-    # Use frontmatter title or filename
     title = frontmatter.pop("title", None) or filepath.stem
-
-    # Pass remaining frontmatter as metadata (exclude id/created_at, server generates those)
     frontmatter.pop("id", None)
     frontmatter.pop("created_at", None)
     if context:
@@ -65,7 +72,7 @@ async def upload_file(client: httpx.AsyncClient, filepath: Path, api_url: str, a
         resp.raise_for_status()
         data = resp.json()
         if data.get("duplicate"):
-            print(f"  = {filepath.name} (duplicate, skipped)")
+            print(f"  = {filepath.name} (duplicate)")
         else:
             print(f"  + {filepath.name} -> {data['path']}")
         return True
@@ -77,66 +84,139 @@ async def upload_file(client: httpx.AsyncClient, filepath: Path, api_url: str, a
         return False
 
 
-async def async_main(args, api_key: str, files: list[Path], batch_size: int):
-    """Run uploads in parallel with batching."""
+async def reingest_file(client: httpx.AsyncClient, doc_path: str, api_url: str, api_key: str) -> tuple[bool, bool]:
+    """Trigger re-ingestion on a document. Returns (success, skipped)."""
+    try:
+        resp = await client.post(
+            f"{api_url}/reingest",
+            json={"path": doc_path},
+            headers={"X-API-Key": api_key},
+            timeout=600,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        skipped = data.get("skipped", False)
+        if skipped:
+            print(f"  = {doc_path} (complete)")
+        else:
+            print(f"  + {doc_path} ({len(data.get('processed', []))} agents)")
+        return True, skipped
+    except httpx.HTTPStatusError as e:
+        print(f"  x {doc_path}: {e.response.status_code}")
+        return False, False
+    except Exception as e:
+        print(f"  x {doc_path}: {e}")
+        return False, False
+
+
+async def run_upload(args, api_key: str):
+    """Run upload command."""
+    pattern = "*.md" if args.flat else "**/*.md"
+    files = [f for f in args.directory.glob(pattern) if not matches_any(f, args.exclude)]
+
+    if not files:
+        print(f"No .md files found in {args.directory}")
+        return
+
+    print(f"Uploading {len(files)} file(s) from {args.directory}")
+    if args.process:
+        print("  (with agent processing)")
+
     sorted_files = sorted(files)
     total_success = 0
 
     async with httpx.AsyncClient() as client:
-        for i in range(0, len(sorted_files), batch_size):
-            batch = sorted_files[i:i + batch_size]
-            tasks = [
-                upload_file(client, f, args.url, api_key, args.process, args.context)
-                for f in batch
-            ]
+        for i in range(0, len(sorted_files), args.batch):
+            batch = sorted_files[i:i + args.batch]
+            tasks = [upload_file(client, f, args.url, api_key, args.process, args.context) for f in batch]
             results = await asyncio.gather(*tasks)
             total_success += sum(results)
 
-    return total_success
+    print(f"\nDone: {total_success}/{len(files)} uploaded")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Upload markdown files to whorl")
-    parser.add_argument("directory", nargs="?", type=Path, help="Directory containing .md files")
-    parser.add_argument("--url", default="http://localhost:8000", help="Whorl API URL")
-    parser.add_argument("--key", help="API key (or set WHORL_API_KEY env var)")
-    parser.add_argument("--flat", "-f", action="store_true", help="Don't search recursively (default is recursive)")
-    parser.add_argument("--process", "-p", action="store_true", help="Run ingestion agent on each file")
-    parser.add_argument("--exclude", "-e", action="append", default=[], metavar="PATTERN",
-                        help="Exclude files matching pattern (can be used multiple times)")
-    parser.add_argument("--context", "-c", metavar="SOURCE",
-                        help="Source context for all files (e.g., 'obsidian', 'meeting-notes')")
-    parser.add_argument("--batch", "-b", type=int, default=25, metavar="N",
-                        help="Number of files to upload in parallel (default: 25)")
-    args = parser.parse_args()
+async def run_reingest(args, api_key: str):
+    """Run reingest command."""
+    async with httpx.AsyncClient() as client:
+        # Get all documents
+        resp = await client.get(f"{args.url}/documents", headers={"X-API-Key": api_key})
+        resp.raise_for_status()
+        docs = resp.json()["docs"]
 
+        if not docs:
+            print("No documents found")
+            return
+
+        print(f"Checking {len(docs)} document(s) for missing agents...")
+
+        total_processed = 0
+        total_skipped = 0
+        for i in range(0, len(docs), args.batch):
+            batch = docs[i:i + args.batch]
+            tasks = [reingest_file(client, doc["path"], args.url, api_key) for doc in batch]
+            results = await asyncio.gather(*tasks)
+            for success, skipped in results:
+                if success:
+                    if skipped:
+                        total_skipped += 1
+                    else:
+                        total_processed += 1
+
+        print(f"\nDone: {total_processed} processed, {total_skipped} already complete")
+
+
+def cmd_upload(args):
+    """Upload command handler."""
     api_key = args.key or os.environ.get("WHORL_API_KEY")
     if not api_key:
         print("Error: API key required (--key or WHORL_API_KEY)")
-        sys.exit(1)
-
-    if not args.directory:
-        parser.print_help()
         sys.exit(1)
 
     if not args.directory.is_dir():
         print(f"Error: {args.directory} is not a directory")
         sys.exit(1)
 
-    pattern = "*.md" if args.flat else "**/*.md"
-    files = [f for f in args.directory.glob(pattern) if not matches_any(f, args.exclude)]
+    asyncio.run(run_upload(args, api_key))
 
-    if not files:
-        print(f"No .md files found in {args.directory}")
-        sys.exit(0)
 
-    print(f"Uploading {len(files)} file(s) from {args.directory}")
-    if args.process:
-        print("  (with agent processing)")
+def cmd_reingest(args):
+    """Reingest command handler."""
+    api_key = args.key or os.environ.get("WHORL_API_KEY")
+    if not api_key:
+        print("Error: API key required (--key or WHORL_API_KEY)")
+        sys.exit(1)
 
-    success = asyncio.run(async_main(args, api_key, files, args.batch))
+    asyncio.run(run_reingest(args, api_key))
 
-    print(f"\nDone: {success}/{len(files)} uploaded")
+
+def main():
+    settings = load_settings()
+    default_url = settings.get("api_base", "http://localhost:8000")
+
+    parser = argparse.ArgumentParser(description="Whorl CLI")
+    parser.add_argument("--url", default=default_url, help=f"Whorl API URL (default: {default_url})")
+    parser.add_argument("--key", help="API key (or set WHORL_API_KEY env var)")
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # Upload command
+    upload_parser = subparsers.add_parser("upload", help="Upload markdown files")
+    upload_parser.add_argument("directory", type=Path, help="Directory containing .md files")
+    upload_parser.add_argument("--flat", "-f", action="store_true", help="Don't search recursively")
+    upload_parser.add_argument("--process", "-p", action="store_true", help="Run ingestion agents")
+    upload_parser.add_argument("--exclude", "-e", action="append", default=[], metavar="PATTERN",
+                               help="Exclude files matching pattern")
+    upload_parser.add_argument("--context", "-c", metavar="SOURCE", help="Source context for files")
+    upload_parser.add_argument("--batch", "-b", type=int, default=50, help="Batch size (default: 50)")
+    upload_parser.set_defaults(func=cmd_upload)
+
+    # Reingest command
+    reingest_parser = subparsers.add_parser("reingest", help="Re-run ingestion on docs missing agents")
+    reingest_parser.add_argument("--batch", "-b", type=int, default=5, help="Batch size (default: 5)")
+    reingest_parser.set_defaults(func=cmd_reingest)
+
+    args = parser.parse_args()
+    args.func(args)
 
 
 if __name__ == "__main__":

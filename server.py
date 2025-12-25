@@ -8,14 +8,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import anthropic
 import yaml
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, HTTPException, Header
+from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
-from claude_agent_sdk import query, ClaudeAgentOptions
 from fastmcp import FastMCP
 from fastmcp.server.openapi import RouteMap, MCPType
+
+from lib import text_edit
 
 load_dotenv()
 
@@ -123,6 +126,10 @@ class DeleteRequest(BaseModel):
     path: str
 
 
+class ReingestRequest(BaseModel):
+    path: str
+
+
 class UpdateRequest(BaseModel):
     path: str
     content: str
@@ -150,10 +157,14 @@ class AgentSearchResponse(BaseModel):
     answer: str
 
 
-def verify_api_key(x_api_key: str):
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def verify_api_key(api_key: str | None = Depends(api_key_header)):
+    """Verify API key from header."""
     if not WHORL_API_KEY:
         raise HTTPException(status_code=500, detail="Server API key not configured")
-    if x_api_key != WHORL_API_KEY:
+    if not api_key or api_key != WHORL_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
@@ -247,25 +258,148 @@ def search_docs(query_str: str, limit: int = 10, context: int = 2) -> list[Searc
     return results[:limit]
 
 
+ANTHROPIC_TOOLS = [
+    {"type": "text_editor_20250124", "name": "str_replace_editor"},
+    {"type": "bash_20250124", "name": "bash"},
+]
+
+MODEL_MAP = {
+    "haiku": "claude-sonnet-4-20250514",  # Use sonnet as haiku replacement for tool use
+    "sonnet": "claude-sonnet-4-20250514",
+    "opus": "claude-opus-4-20250514",
+}
+
+
+def run_bash_command(command: str, cwd: str, timeout: int = 30) -> tuple[str, str, int]:
+    """Execute a bash command and return (stdout, stderr, returncode)."""
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return result.stdout, result.stderr, result.returncode
+    except subprocess.TimeoutExpired:
+        return "", "Command timed out", -1
+    except Exception as e:
+        return "", str(e), -1
+
+
+def format_bash_output(stdout: str, stderr: str, returncode: int) -> str:
+    """Format bash output for agent consumption."""
+    output = stdout
+    if stderr:
+        output += f"\n[stderr]: {stderr}" if output else f"[stderr]: {stderr}"
+    if returncode != 0:
+        output += f"\n[exit code: {returncode}]"
+    return output or "(no output)"
+
+
+def execute_tool(name: str, inputs: dict, cwd: str) -> str:
+    """Execute a tool and return the result."""
+    if name == "bash":
+        command = inputs.get("command", "")
+        print(f"  [bash] {command[:80]}{'...' if len(command) > 80 else ''}")
+        stdout, stderr, returncode = run_bash_command(command, cwd)
+        return format_bash_output(stdout, stderr, returncode)
+
+    elif name == "str_replace_editor":
+        command = inputs.get("command", "")
+        path = inputs.get("path", "")
+        # Make path absolute relative to cwd
+        if path and not path.startswith("/"):
+            path = str(Path(cwd) / path)
+        # Security: ensure path stays within cwd
+        try:
+            resolved = Path(path).resolve()
+            cwd_resolved = Path(cwd).resolve()
+            if not str(resolved).startswith(str(cwd_resolved)):
+                return f"Error: path {path} is outside allowed directory"
+        except Exception:
+            return f"Error: invalid path {path}"
+        print(f"  [edit] {command} {path}")
+        # Remove command/path from inputs since we're passing them explicitly
+        kwargs = {k: v for k, v in inputs.items() if k not in ("command", "path")}
+        return text_edit.execute(command, path, **kwargs)
+
+    return f"Unknown tool: {name}"
+
+
+async def run_agent_loop(
+    client: anthropic.AsyncAnthropic,
+    system_prompt: str,
+    user_message: str,
+    model: str,
+    max_turns: int,
+    cwd: str,
+) -> str:
+    """Run a multi-turn agent conversation with bash and text_editor tools."""
+    model_id = MODEL_MAP.get(model, model)
+    messages = [{"role": "user", "content": user_message}]
+
+    for turn in range(max_turns):
+        response = await client.beta.messages.create(
+            model=model_id,
+            max_tokens=4096,
+            system=system_prompt,
+            tools=ANTHROPIC_TOOLS,
+            messages=messages,
+            betas=["computer-use-2025-01-24"],
+        )
+
+        # Check if we're done (no tool use)
+        has_tool_use = any(block.type == "tool_use" for block in response.content)
+
+        if not has_tool_use:
+            # Extract final text response
+            text_parts = [block.text for block in response.content if block.type == "text"]
+            return "\n".join(text_parts) if text_parts else ""
+
+        # Process tool calls
+        messages.append({"role": "assistant", "content": response.content})
+
+        tool_results = []
+        for block in response.content:
+            if block.type == "tool_use":
+                result = execute_tool(block.name, block.input, cwd)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
+                })
+
+        messages.append({"role": "user", "content": tool_results})
+
+        if response.stop_reason == "end_turn":
+            break
+
+    return ""
+
+
 async def run_single_ingestion_agent(content: str, filepath: Path, prompt_path: Path, config: dict) -> str | None:
     """Run a single ingestion agent with a specific prompt. Returns the prompt name or None on failure."""
     try:
         prompt_template = prompt_path.read_text()
         system_prompt = prompt_template.format(filepath=filepath)
+        # Per-prompt model override, fall back to default
+        prompt_name = prompt_path.stem
+        models = config.get("models", {})
+        model = models.get(prompt_name, config.get("model", "sonnet"))
+        max_turns = config.get("max_turns", 50)
 
-        options = ClaudeAgentOptions(
-            allowed_tools=config["allowed_tools"],
-            max_turns=config["max_turns"],
+        client = anthropic.AsyncAnthropic()
+
+        await run_agent_loop(
+            client=client,
             system_prompt=system_prompt,
-            model=config.get("model", "sonnet"),
-            cwd=str(WHORL_DIR),
-            permission_mode="acceptEdits",
+            user_message=content,
+            model=model,
+            max_turns=max_turns,
+            cwd=str(get_docs_dir()),
         )
-
-        async for message in query(prompt=content, options=options):
-            # Log agent messages for debugging
-            if hasattr(message, 'type'):
-                print(f"[{prompt_path.stem}] {message.type}: {getattr(message, 'content', '')[:100] if hasattr(message, 'content') else ''}")
 
         return prompt_path.stem
     except Exception as e:
@@ -312,28 +446,26 @@ async def run_search_agent(query_str: str, settings: dict) -> str:
     docs_dir = get_docs_dir()
     system_prompt = prompt_template.format(docs_dir=docs_dir)
 
-    options = ClaudeAgentOptions(
-        allowed_tools=config["allowed_tools"],
-        max_turns=config["max_turns"],
+    model = config.get("model", "sonnet")
+    max_turns = config.get("max_turns", 5)
+
+    client = anthropic.AsyncAnthropic()
+
+    result = await run_agent_loop(
+        client=client,
         system_prompt=system_prompt,
-        model=config.get("model", "sonnet"),
+        user_message=query_str,
+        model=model,
+        max_turns=max_turns,
         cwd=str(docs_dir),
-        permission_mode="acceptEdits",
     )
 
-    result_text = ""
-    async for message in query(prompt=query_str, options=options):
-        if hasattr(message, "result") and message.result:
-            result_text = message.result
-
-    return result_text or "No results found."
+    return result or "No results found."
 
 
 @router.post("/ingest", response_model=IngestResponse, tags=["mcp"])
-async def ingest(request: IngestRequest, x_api_key: str = Header(...)):
+async def ingest(request: IngestRequest, _: None = Depends(verify_api_key)):
     """Ingest content into the knowledge base."""
-    verify_api_key(x_api_key)
-
     docs_dir = get_docs_dir()
     docs_dir.mkdir(parents=True, exist_ok=True)
     settings = load_settings()
@@ -386,55 +518,35 @@ async def ingest(request: IngestRequest, x_api_key: str = Header(...)):
 
 
 @router.post("/search", response_model=SearchResponse, tags=["mcp"])
-async def search(request: SearchRequest, x_api_key: str = Header(...)):
+async def search(request: SearchRequest, _: None = Depends(verify_api_key)):
     """Full text search over the knowledge base."""
-    verify_api_key(x_api_key)
-
     results = search_docs(request.query, request.limit, request.context)
     return SearchResponse(results=results, total=len(results))
 
 
 @router.post("/agent_search", response_model=AgentSearchResponse, tags=["mcp"])
-async def agent_search(request: AgentSearchRequest, x_api_key: str = Header(...)):
+async def agent_search(request: AgentSearchRequest, _: None = Depends(verify_api_key)):
     """Agent-powered search over the knowledge base."""
-    verify_api_key(x_api_key)
-
     settings = load_settings()
     answer = await run_search_agent(request.query, settings)
     return AgentSearchResponse(answer=answer)
 
 
 @router.post("/bash", response_model=BashResponse, tags=["mcp"])
-async def bash(request: BashRequest, x_api_key: str = Header(...)):
+async def bash(request: BashRequest, _: None = Depends(verify_api_key)):
     """Run a bash command in the docs directory."""
-    verify_api_key(x_api_key)
-
     docs_dir = get_docs_dir()
     docs_dir.mkdir(parents=True, exist_ok=True)
 
-    try:
-        result = subprocess.run(
-            request.command,
-            shell=True,
-            cwd=str(docs_dir),
-            capture_output=True,
-            text=True,
-            timeout=request.timeout,
-        )
-        return BashResponse(
-            stdout=result.stdout,
-            stderr=result.stderr,
-            returncode=result.returncode,
-        )
-    except subprocess.TimeoutExpired:
+    stdout, stderr, returncode = run_bash_command(request.command, str(docs_dir), request.timeout)
+    if returncode == -1 and stderr == "Command timed out":
         raise HTTPException(status_code=408, detail="Command timed out")
+    return BashResponse(stdout=stdout, stderr=stderr, returncode=returncode)
 
 
 @router.post("/delete")
-async def delete_doc(request: DeleteRequest, x_api_key: str = Header(...)):
+async def delete_doc(request: DeleteRequest, _: None = Depends(verify_api_key)):
     """Delete a document."""
-    verify_api_key(x_api_key)
-
     docs_dir = get_docs_dir()
     filepath = docs_dir / request.path
 
@@ -461,10 +573,8 @@ async def delete_doc(request: DeleteRequest, x_api_key: str = Header(...)):
 
 
 @router.post("/update")
-async def update_doc(request: UpdateRequest, x_api_key: str = Header(...)):
+async def update_doc(request: UpdateRequest, _: None = Depends(verify_api_key)):
     """Update an existing document."""
-    verify_api_key(x_api_key)
-
     docs_dir = get_docs_dir()
     filepath = docs_dir / request.path
 
@@ -494,13 +604,79 @@ async def update_doc(request: UpdateRequest, x_api_key: str = Header(...)):
     return {"status": "updated", "path": request.path}
 
 
+class ReingestResponse(BaseModel):
+    status: str
+    path: str
+    processed: list[str]
+    skipped: bool = False
+
+
+@router.post("/reingest", response_model=ReingestResponse)
+async def reingest_doc(request: ReingestRequest, _: None = Depends(verify_api_key)):
+    """Re-run ingestion agents on an existing document (only missing agents)."""
+    docs_dir = get_docs_dir()
+    filepath = docs_dir / request.path
+
+    # Security check
+    try:
+        filepath = filepath.resolve()
+        if not str(filepath).startswith(str(docs_dir.resolve())):
+            raise HTTPException(status_code=400, detail="Invalid path")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    content = filepath.read_text()
+    frontmatter, body = parse_frontmatter(content)
+
+    settings = load_settings()
+    config = settings.get("ingestion_config", {})
+    prompts_dir = WHORL_DIR / config.get("prompts_dir", "prompts/ingestion")
+
+    # Get expected vs processed agents
+    expected_agents = {p.stem for p in prompts_dir.glob("*.md")} if prompts_dir.exists() else set()
+    processed_agents = set(frontmatter.get("processed", []))
+    missing_agents = expected_agents - processed_agents
+
+    if not missing_agents:
+        return ReingestResponse(status="skipped", path=request.path, processed=list(processed_agents), skipped=True)
+
+    # Run only missing agents
+    prompt_files = [prompts_dir / f"{agent}.md" for agent in missing_agents]
+    tasks = [
+        run_single_ingestion_agent(body, filepath, prompt_path, config)
+        for prompt_path in prompt_files if prompt_path.exists()
+    ]
+    results = await asyncio.gather(*tasks)
+    new_agents = [name for name in results if name is not None]
+
+    # Update frontmatter with all processed agents
+    all_processed = sorted(processed_agents | set(new_agents))
+    file_content = filepath.read_text()
+    frontmatter, body = parse_frontmatter(file_content)
+    frontmatter["processed"] = all_processed
+    yaml_frontmatter = yaml.dump(frontmatter, default_flow_style=False, allow_unicode=True)
+    filepath.write_text(f"---\n{yaml_frontmatter}---\n\n{body}")
+
+    return ReingestResponse(status="reingested", path=request.path, processed=all_processed)
+
+
+@router.get("/settings")
+async def get_settings(_: None = Depends(verify_api_key)):
+    """Get current settings."""
+    verify_api_key(x_api_key)
+    return load_settings()
+
+
 @router.get("/health")
 async def health():
     return {"status": "ok"}
 
 
 @router.get("/documents")
-async def list_docs(x_api_key: str = Header(...)):
+async def list_docs(_: None = Depends(verify_api_key)):
     """List all documents."""
     verify_api_key(x_api_key)
     docs_dir = get_docs_dir()
@@ -520,7 +696,7 @@ async def list_docs(x_api_key: str = Header(...)):
 
 
 @router.get("/documents/{path:path}")
-async def get_doc(path: str, x_api_key: str = Header(...)):
+async def get_doc(path: str, _: None = Depends(verify_api_key)):
     """Get a document's content."""
     verify_api_key(x_api_key)
     docs_dir = get_docs_dir()
