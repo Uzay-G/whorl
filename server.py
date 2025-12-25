@@ -666,7 +666,6 @@ async def reingest_doc(request: ReingestRequest, _: None = Depends(verify_api_ke
 @router.get("/settings")
 async def get_settings(_: None = Depends(verify_api_key)):
     """Get current settings."""
-    verify_api_key(x_api_key)
     return load_settings()
 
 
@@ -678,7 +677,6 @@ async def health():
 @router.get("/documents")
 async def list_docs(_: None = Depends(verify_api_key)):
     """List all documents."""
-    verify_api_key(x_api_key)
     docs_dir = get_docs_dir()
     docs = []
     for filepath in docs_dir.glob("*.md"):
@@ -698,7 +696,6 @@ async def list_docs(_: None = Depends(verify_api_key)):
 @router.get("/documents/{path:path}")
 async def get_doc(path: str, _: None = Depends(verify_api_key)):
     """Get a document's content."""
-    verify_api_key(x_api_key)
     docs_dir = get_docs_dir()
     filepath = docs_dir / path
 
