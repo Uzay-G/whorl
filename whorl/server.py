@@ -2,8 +2,10 @@
 
 import hashlib
 import json
+import logging
 import os
 import subprocess
+import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -519,6 +521,14 @@ app.add_middleware(
 )
 app.include_router(router, prefix="/api")
 app.mount("/mcp", mcp_app)
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Log all unhandled exceptions."""
+    print(f"ERROR: {request.method} {request.url.path}")
+    traceback.print_exc()
+    raise exc
 
 
 @app.get("/{full_path:path}")
