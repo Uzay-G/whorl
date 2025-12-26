@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { marked } from 'marked'
-import { listDocs, getDocContent, parseMarkdown, search, getApiKey, setApiKey, AuthError, ingest, deleteDoc, updateDoc } from './api'
+import { listDocs, getDocContent, parseMarkdown, search, getApiKey, setApiKey, AuthError, ingest, deleteDoc, updateDoc, listLibrary, getDownloadUrl, type LibraryFile } from './api'
 
 interface Doc {
   id: string
@@ -31,6 +31,8 @@ const saving = ref(false)
 const editingDoc = ref<Doc | null>(null)
 const shareStatus = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
 const sidebarOpen = ref(false)
+const showLibrary = ref(false)
+const libraryFiles = ref<LibraryFile[]>([])
 
 const filteredDocs = computed(() => {
   if (!filter.value) return docs.value
@@ -94,7 +96,28 @@ function goHome(pushUrl = true) {
   selectedDoc.value = null
   docContent.value = ''
   showEditor.value = false
+  showLibrary.value = false
   if (pushUrl) updateUrl(null)
+}
+
+async function openLibrary() {
+  showLibrary.value = true
+  showEditor.value = false
+  selectedDoc.value = null
+  sidebarOpen.value = false
+  loading.value = true
+  try {
+    libraryFiles.value = await listLibrary()
+  } catch (e) {
+    console.error('Failed to load library:', e)
+  }
+  loading.value = false
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
 }
 
 function openEditor() {
@@ -400,6 +423,12 @@ onMounted(async () => {
           </a>
         </div>
       </div>
+
+      <div class="sidebar-footer">
+        <button class="library-btn" @click="openLibrary" :class="{ active: showLibrary }">
+          Library
+        </button>
+      </div>
     </aside>
 
     <main class="content">
@@ -425,6 +454,29 @@ onMounted(async () => {
           <button @click="saveDoc" :disabled="saving" class="save-btn">
             {{ saving ? 'Saving...' : editingDoc ? 'Update' : 'Save' }}
           </button>
+        </div>
+      </article>
+
+      <article v-else-if="showLibrary" class="library-view">
+        <h1>Library</h1>
+        <p class="library-subtitle">Downloaded PDFs and articles</p>
+        <div v-if="libraryFiles.length === 0" class="library-empty">
+          No files in library yet. Media referenced in notes will be downloaded here.
+        </div>
+        <div v-else class="library-list">
+          <a
+            v-for="file in libraryFiles"
+            :key="file.path"
+            :href="getDownloadUrl(file.path)"
+            class="library-item"
+            target="_blank"
+          >
+            <span class="file-icon">{{ file.extension === '.pdf' ? 'PDF' : 'DOC' }}</span>
+            <span class="file-info">
+              <span class="file-name">{{ file.name }}</span>
+              <span class="file-size">{{ formatFileSize(file.size) }}</span>
+            </span>
+          </a>
         </div>
       </article>
 
@@ -1085,5 +1137,106 @@ article h1 {
   .doc-meta {
     flex-wrap: wrap;
   }
+}
+
+/* Library styles */
+.sidebar-footer {
+  padding: 0.75rem;
+  border-top: 1px dotted #333;
+}
+
+.library-btn {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  background: transparent;
+  border: 1px dotted #333;
+  color: #333;
+  font-family: "Courier Prime", monospace;
+  font-size: 0.85rem;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.2s;
+}
+
+.library-btn:hover {
+  background: rgba(0,0,0,0.05);
+}
+
+.library-btn.active {
+  background: rgba(0,0,0,0.08);
+  font-weight: 700;
+}
+
+.library-view h1 {
+  font-family: "Inter", -apple-system, sans-serif;
+  font-size: 1.6rem;
+  font-weight: 400;
+  margin: 0 0 0.5rem;
+}
+
+.library-subtitle {
+  color: #666;
+  font-size: 0.9rem;
+  margin-bottom: 2rem;
+}
+
+.library-empty {
+  color: #666;
+  font-style: italic;
+  padding: 2rem;
+  background: rgba(0,0,0,0.03);
+  border: 1px dotted #999;
+}
+
+.library-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.library-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: rgba(255,255,255,0.3);
+  border: 1px dotted #999;
+  text-decoration: none;
+  color: #333;
+  transition: all 0.2s;
+}
+
+.library-item:hover {
+  background: rgba(255,255,255,0.5);
+  border-color: #333;
+}
+
+.file-icon {
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: #2a2520;
+  color: #fff;
+  padding: 0.3rem 0.5rem;
+  border-radius: 3px;
+  min-width: 35px;
+  text-align: center;
+}
+
+.file-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-size {
+  font-size: 0.75rem;
+  color: #666;
 }
 </style>

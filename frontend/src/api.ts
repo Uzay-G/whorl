@@ -107,6 +107,22 @@ export async function updateDoc(path: string, content: string, title?: string): 
   })
 }
 
+export interface LibraryFile {
+  name: string
+  path: string
+  size: number
+  extension: string
+}
+
+export async function listLibrary(): Promise<LibraryFile[]> {
+  const { files } = await request('/library')
+  return files
+}
+
+export function getDownloadUrl(path: string): string {
+  return `${API_BASE}/download/${encodeURIComponent(path)}?api_key=${encodeURIComponent(getApiKey())}`
+}
+
 export function parseMarkdown(content: string): { frontmatter: Record<string, unknown>; body: string } {
   if (content.startsWith('---')) {
     const parts = content.split('---')

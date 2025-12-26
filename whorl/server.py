@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from fastmcp import FastMCP
 from fastmcp.server.openapi import RouteMap, MCPType
 
-from lib import text_edit
+from whorl.lib import text_edit
 
 load_dotenv()
 
@@ -184,22 +184,28 @@ def parse_frontmatter(content: str) -> tuple[dict, str]:
     return {}, content
 
 
-def search_docs(query_str: str, limit: int = 10, context: int = 2) -> list[SearchResult]:
+def search_docs(query_str: str, limit: int = 10, context: int = 2, exclude: list[str] | None = None) -> list[SearchResult]:
     """Full text search using ripgrep."""
     docs_dir = get_docs_dir()
     if not docs_dir.exists():
         return []
 
+    cmd = [
+        "rg",
+        "--json",
+        "-i",  # case insensitive
+        "-C", str(context),  # context lines
+    ]
+
+    # Add exclude patterns
+    for pattern in (exclude or []):
+        cmd.extend(["--glob", f"!{pattern}"])
+
+    cmd.extend([query_str, str(docs_dir)])
+
     try:
         result = subprocess.run(
-            [
-                "rg",
-                "--json",
-                "-i",  # case insensitive
-                "-C", str(context),  # context lines
-                query_str,
-                str(docs_dir),
-            ],
+            cmd,
             capture_output=True,
             text=True,
             timeout=10,
@@ -391,13 +397,13 @@ async def run_agent_loop(
 async def run_single_ingestion_agent(content: str, filepath: Path, prompt_path: Path, config: dict) -> str | None:
     """Run a single ingestion agent with a specific prompt. Returns the prompt name or None on failure."""
     try:
-        prompt_template = prompt_path.read_text()
-        system_prompt = prompt_template.format(filepath=filepath)
-        # Per-prompt model override, fall back to default
-        prompt_name = prompt_path.stem
-        models = config.get("models", {})
-        model = models.get(prompt_name, config.get("model", "sonnet"))
-        max_turns = config.get("max_turns", 50)
+        prompt_raw = prompt_path.read_text()
+        prompt_frontmatter, prompt_body = parse_frontmatter(prompt_raw)
+        system_prompt = prompt_body.format(filepath=filepath)
+
+        # Config from frontmatter, fall back to global config
+        model = prompt_frontmatter.get("model", config.get("model", "sonnet"))
+        max_turns = prompt_frontmatter.get("max_turns", config.get("max_turns", 50))
 
         client = anthropic.AsyncAnthropic()
 
@@ -451,12 +457,14 @@ async def run_ingestion_agent(content: str, filepath: Path, settings: dict) -> N
 async def run_search_agent(query_str: str, settings: dict) -> str:
     config = settings["search_config"]
     prompt_path = WHORL_DIR / config["prompt"]
-    prompt_template = prompt_path.read_text()
+    prompt_raw = prompt_path.read_text()
+    prompt_frontmatter, prompt_body = parse_frontmatter(prompt_raw)
     docs_dir = get_docs_dir()
-    system_prompt = prompt_template.format(docs_dir=docs_dir)
+    system_prompt = prompt_body.format(docs_dir=docs_dir)
 
-    model = config.get("model", "sonnet")
-    max_turns = config.get("max_turns", 5)
+    # Config from frontmatter, fall back to global config
+    model = prompt_frontmatter.get("model", config.get("model", "sonnet"))
+    max_turns = prompt_frontmatter.get("max_turns", config.get("max_turns", 25))
 
     client = anthropic.AsyncAnthropic()
 
@@ -529,7 +537,9 @@ async def ingest(request: IngestRequest, _: None = Depends(verify_api_key)):
 @router.post("/search", response_model=SearchResponse, tags=["mcp"])
 async def search(request: SearchRequest, _: None = Depends(verify_api_key)):
     """Full text search over the knowledge base."""
-    results = search_docs(request.query, request.limit, request.context)
+    settings = load_settings()
+    exclude = settings.get("search_config", {}).get("exclude", [])
+    results = search_docs(request.query, request.limit, request.context, exclude)
     return SearchResponse(results=results, total=len(results))
 
 
@@ -685,15 +695,17 @@ async def health():
 
 @router.get("/documents")
 async def list_docs(_: None = Depends(verify_api_key)):
-    """List all documents."""
+    """List all documents (recursive)."""
     docs_dir = get_docs_dir()
     docs = []
-    for filepath in docs_dir.glob("*.md"):
+    for filepath in docs_dir.glob("**/*.md"):
         content = filepath.read_text()
         frontmatter, body = parse_frontmatter(content)
+        # Use relative path from docs_dir
+        rel_path = filepath.relative_to(docs_dir)
         docs.append({
             "id": frontmatter.get("id", filepath.stem),
-            "path": filepath.name,
+            "path": str(rel_path),
             "title": frontmatter.get("title"),
             "created_at": frontmatter.get("created_at"),
             "frontmatter": frontmatter,
@@ -715,6 +727,57 @@ async def get_doc(path: str, _: None = Depends(verify_api_key)):
         raise HTTPException(status_code=404, detail="Not found")
 
     return {"content": filepath.read_text()}
+
+
+@router.get("/download/{path:path}")
+async def download_file(
+    path: str,
+    api_key: str | None = None,
+    header_key: str | None = Depends(api_key_header),
+):
+    """Download a file from the docs directory (PDFs, etc)."""
+    # Accept API key from either query param or header (for browser downloads)
+    key = api_key or header_key
+    if not WHORL_API_KEY:
+        raise HTTPException(status_code=500, detail="Server API key not configured")
+    if not key or key != WHORL_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    docs_dir = get_docs_dir()
+    filepath = docs_dir / path
+
+    # Security check
+    if not str(filepath.resolve()).startswith(str(docs_dir.resolve())):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail="Not found")
+
+    return FileResponse(
+        filepath,
+        filename=filepath.name,
+        media_type="application/octet-stream",
+    )
+
+
+@router.get("/library")
+async def list_library(_: None = Depends(verify_api_key)):
+    """List files in the library folder."""
+    library_dir = get_docs_dir() / "library"
+    if not library_dir.exists():
+        return {"files": []}
+
+    files = []
+    for filepath in library_dir.glob("**/*"):
+        if filepath.is_file():
+            rel_path = filepath.relative_to(get_docs_dir())
+            files.append({
+                "name": filepath.name,
+                "path": str(rel_path),
+                "size": filepath.stat().st_size,
+                "extension": filepath.suffix.lower(),
+            })
+    files.sort(key=lambda f: f["name"].lower())
+    return {"files": files}
 
 
 # Create temp app for MCP
@@ -757,7 +820,7 @@ app.include_router(router, prefix="/api")
 app.mount("/mcp", mcp_app)
 
 # Serve frontend static files
-FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"
+FRONTEND_DIR = Path(__file__).parent.parent / "frontend" / "dist"
 
 
 @app.get("/{full_path:path}")
