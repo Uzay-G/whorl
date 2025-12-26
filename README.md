@@ -6,7 +6,7 @@ In doing so, you can effectively personalize your interactions with models, by m
 
 Whorl is designed to be simple, living in markdown files on your system, and then relying on agents to apply transformations, link these files, and enhance them in whatever way you'd like.
 
-It is self-hosted, meaning that to have an AI use it, you need to run it from some public IP or endpoint, and then the mcp url is at `/mcp`.
+It is self-hosted, meaning that to have an AI use it, you need to run it from some public IP or endpoint.
 
 
 ## Getting started
@@ -148,7 +148,7 @@ Use the bash and str_replace_editor tools to read the document and create a summ
 ```
 
 
-Feel free to contribute! Note because this was a quick side project I was pretty lax on supervision with claude code, which was very useful.
+Feel free to contribute! Note because this was a quick side project I was pretty lax on supervision with claude code, which was very useful. I will soon release a blog with info on how I use whorl.
 
 ## License
 
