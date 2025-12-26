@@ -300,13 +300,20 @@ def format_bash_output(stdout: str, stderr: str, returncode: int) -> str:
     return output or "(no output)"
 
 
+def truncate_if_huge(output: str, limit: int = 100000) -> str:
+    """Only truncate if output is very large (100k+ chars)."""
+    if len(output) <= limit:
+        return output
+    return output[:limit] + f"\n\n[truncated - was {len(output)} chars]"
+
+
 def execute_tool(name: str, inputs: dict, cwd: str) -> str:
-    """Execute a tool and return the result."""
+    """Execute a tool and return the result (truncated if huge)."""
     if name == "bash":
         command = inputs.get("command", "")
         print(f"  [bash] {command[:80]}{'...' if len(command) > 80 else ''}")
         stdout, stderr, returncode = run_bash_command(command, cwd)
-        return format_bash_output(stdout, stderr, returncode)
+        return truncate_if_huge(format_bash_output(stdout, stderr, returncode))
 
     elif name == "str_replace_editor":
         command = inputs.get("command", "")
@@ -325,7 +332,7 @@ def execute_tool(name: str, inputs: dict, cwd: str) -> str:
         print(f"  [edit] {command} {path}")
         # Remove command/path from inputs since we're passing them explicitly
         kwargs = {k: v for k, v in inputs.items() if k not in ("command", "path")}
-        return text_edit.execute(command, path, **kwargs)
+        return truncate_if_huge(text_edit.execute(command, path, **kwargs))
 
     return f"Unknown tool: {name}"
 
