@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { marked } from 'marked'
-import { listDocs, getDocContent, parseMarkdown, search, getApiKey, setApiKey, AuthError, ingest, deleteDoc, updateDoc, listLibrary, getDownloadUrl, type LibraryFile } from './api'
+import { listDocs, getDocContent, parseMarkdown, search, getPassword, setPassword, AuthError, ingest, deleteDoc, updateDoc, listLibrary, getDownloadUrl, type LibraryFile } from './api'
 
 interface Doc {
   id: string
@@ -22,7 +22,7 @@ const searchQuery = ref('')
 const searchResults = ref<Array<{ id: string; path: string; title: string | null; snippet: string }>>([])
 const authenticated = ref(false)
 const checkingAuth = ref(true)
-const apiKeyInput = ref('')
+const passwordInput = ref('')
 const authError = ref('')
 const showEditor = ref(false)
 const editorTitle = ref('')
@@ -43,9 +43,9 @@ const filteredDocs = computed(() => {
 })
 
 async function login() {
-  if (!apiKeyInput.value.trim()) return
-  setApiKey(apiKeyInput.value.trim())
-  apiKeyInput.value = ''
+  if (!passwordInput.value.trim()) return
+  setPassword(passwordInput.value.trim())
+  passwordInput.value = ''
   authError.value = ''
   await loadDocs()
 }
@@ -66,7 +66,7 @@ async function loadDocs() {
   } catch (e) {
     if (e instanceof AuthError) {
       authenticated.value = false
-      authError.value = 'Invalid API key'
+      authError.value = 'Invalid password'
     } else {
       console.error('Failed to load docs:', e)
     }
@@ -262,8 +262,8 @@ async function loadDocFromUrl() {
 }
 
 onMounted(async () => {
-  // If we have a stored API key, assume valid and load directly
-  if (getApiKey()) {
+  // If we have a stored password, assume valid and load directly
+  if (getPassword()) {
     authenticated.value = true
     checkingAuth.value = false
 
@@ -354,9 +354,9 @@ onMounted(async () => {
       <h1>whorl</h1>
       <p v-if="authError" class="error">{{ authError }}</p>
       <input
-        v-model="apiKeyInput"
+        v-model="passwordInput"
         type="password"
-        placeholder="API Key"
+        placeholder="Password"
         @keyup.enter="login"
         class="login-input"
       />

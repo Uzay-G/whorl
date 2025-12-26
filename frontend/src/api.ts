@@ -1,15 +1,15 @@
 const API_BASE = import.meta.env.VITE_API_URL || '/api'
-const STORAGE_KEY = 'whorl_api_key'
+const STORAGE_KEY = 'whorl_password'
 
-export function getApiKey(): string {
+export function getPassword(): string {
   return localStorage.getItem(STORAGE_KEY) || ''
 }
 
-export function setApiKey(key: string) {
-  localStorage.setItem(STORAGE_KEY, key)
+export function setPassword(password: string) {
+  localStorage.setItem(STORAGE_KEY, password)
 }
 
-export function clearApiKey() {
+export function clearPassword() {
   localStorage.removeItem(STORAGE_KEY)
 }
 
@@ -42,12 +42,12 @@ async function request(endpoint: string, options: RequestInit = {}) {
     ...options,
     headers: {
       'Content-Type': 'application/json',
-      'X-API-Key': getApiKey(),
+      'X-Password': getPassword(),
       ...options.headers,
     },
   })
   if (res.status === 401) {
-    clearApiKey()
+    clearPassword()
     throw new AuthError()
   }
   if (!res.ok) throw new Error(`API error: ${res.status}`)
@@ -122,7 +122,7 @@ export async function listLibrary(): Promise<LibraryFile[]> {
 export function getDownloadUrl(path: string): string {
   // Encode each path segment separately to preserve slashes
   const encodedPath = path.split('/').map(encodeURIComponent).join('/')
-  return `${API_BASE}/download/${encodedPath}?api_key=${encodeURIComponent(getApiKey())}`
+  return `${API_BASE}/download/${encodedPath}?password=${encodeURIComponent(getPassword())}`
 }
 
 export function parseMarkdown(content: string): { frontmatter: Record<string, unknown>; body: string } {

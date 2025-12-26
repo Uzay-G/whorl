@@ -27,7 +27,7 @@ load_dotenv()
 WHORL_DIR = Path.home() / ".whorl"
 SETTINGS_PATH = WHORL_DIR / "settings.json"
 
-WHORL_API_KEY = os.environ.get("WHORL_API_KEY")
+WHORL_PASSWORD = os.environ.get("WHORL_PASSWORD")
 
 router = APIRouter()
 
@@ -128,10 +128,6 @@ class DeleteRequest(BaseModel):
     path: str
 
 
-class ReingestRequest(BaseModel):
-    path: str
-
-
 class UpdateRequest(BaseModel):
     path: str
     content: str
@@ -159,15 +155,15 @@ class AgentSearchResponse(BaseModel):
     answer: str
 
 
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+password_header = APIKeyHeader(name="X-Password", auto_error=False)
 
 
-async def verify_api_key(api_key: str | None = Depends(api_key_header)):
-    """Verify API key from header."""
-    if not WHORL_API_KEY:
-        raise HTTPException(status_code=500, detail="Server API key not configured")
-    if not api_key or api_key != WHORL_API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+async def verify_password(password: str | None = Depends(password_header)):
+    """Verify password from header."""
+    if not WHORL_PASSWORD:
+        raise HTTPException(status_code=500, detail="Server password not configured")
+    if not password or password != WHORL_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid password")
 
 
 def parse_frontmatter(content: str) -> tuple[dict, str]:
@@ -246,8 +242,11 @@ def search_docs(query_str: str, limit: int = 10, context: int = 2, exclude: list
     results = []
     for filepath_str, match_data in matches.items():
         filepath = Path(filepath_str)
-        content = filepath.read_text()
-        frontmatter, _ = parse_frontmatter(content)
+        try:
+            content = filepath.read_text(errors="replace")
+            frontmatter, _ = parse_frontmatter(content)
+        except Exception:
+            frontmatter = {}
 
         # Sort lines by line number and build snippet
         match_data["lines"].sort(key=lambda x: x[0])
@@ -480,7 +479,7 @@ async def run_search_agent(query_str: str, settings: dict) -> str:
 
 
 @router.post("/ingest", response_model=IngestResponse, tags=["mcp"])
-async def ingest(request: IngestRequest, _: None = Depends(verify_api_key)):
+async def ingest(request: IngestRequest, _: None = Depends(verify_password)):
     """Ingest content into the knowledge base."""
     docs_dir = get_docs_dir()
     docs_dir.mkdir(parents=True, exist_ok=True)
@@ -534,7 +533,7 @@ async def ingest(request: IngestRequest, _: None = Depends(verify_api_key)):
 
 
 @router.post("/search", response_model=SearchResponse, tags=["mcp"])
-async def search(request: SearchRequest, _: None = Depends(verify_api_key)):
+async def search(request: SearchRequest, _: None = Depends(verify_password)):
     """Full text search over the knowledge base."""
     settings = load_settings()
     exclude = settings.get("search_config", {}).get("exclude", [])
@@ -543,7 +542,7 @@ async def search(request: SearchRequest, _: None = Depends(verify_api_key)):
 
 
 @router.post("/agent_search", response_model=AgentSearchResponse, tags=["mcp"])
-async def agent_search(request: AgentSearchRequest, _: None = Depends(verify_api_key)):
+async def agent_search(request: AgentSearchRequest, _: None = Depends(verify_password)):
     """Agent-powered search over the knowledge base."""
     settings = load_settings()
     answer = await run_search_agent(request.query, settings)
@@ -551,7 +550,7 @@ async def agent_search(request: AgentSearchRequest, _: None = Depends(verify_api
 
 
 @router.post("/bash", response_model=BashResponse, tags=["mcp"])
-async def bash(request: BashRequest, _: None = Depends(verify_api_key)):
+async def bash(request: BashRequest, _: None = Depends(verify_password)):
     """Run a bash command in the docs directory."""
     docs_dir = get_docs_dir()
     docs_dir.mkdir(parents=True, exist_ok=True)
@@ -563,7 +562,7 @@ async def bash(request: BashRequest, _: None = Depends(verify_api_key)):
 
 
 @router.post("/delete")
-async def delete_doc(request: DeleteRequest, _: None = Depends(verify_api_key)):
+async def delete_doc(request: DeleteRequest, _: None = Depends(verify_password)):
     """Delete a document."""
     docs_dir = get_docs_dir()
     filepath = docs_dir / request.path
@@ -591,7 +590,7 @@ async def delete_doc(request: DeleteRequest, _: None = Depends(verify_api_key)):
 
 
 @router.post("/update")
-async def update_doc(request: UpdateRequest, _: None = Depends(verify_api_key)):
+async def update_doc(request: UpdateRequest, _: None = Depends(verify_password)):
     """Update an existing document."""
     docs_dir = get_docs_dir()
     filepath = docs_dir / request.path
@@ -622,44 +621,34 @@ async def update_doc(request: UpdateRequest, _: None = Depends(verify_api_key)):
     return {"status": "updated", "path": request.path}
 
 
-class ReingestResponse(BaseModel):
-    status: str
+class SyncResult(BaseModel):
     path: str
-    processed: list[str]
-    skipped: bool = False
+    status: str  # "processed" or "skipped"
+    agents: list[str]
 
 
-@router.post("/reingest", response_model=ReingestResponse)
-async def reingest_doc(request: ReingestRequest, _: None = Depends(verify_api_key)):
-    """Re-run ingestion agents on an existing document (only missing agents)."""
-    docs_dir = get_docs_dir()
-    filepath = docs_dir / request.path
+class SyncResponse(BaseModel):
+    total: int
+    processed: int
+    skipped: int
+    results: list[SyncResult]
 
-    # Security check
+
+async def sync_single_doc(filepath: Path, docs_dir: Path, prompts_dir: Path, config: dict, expected_agents: set[str]) -> SyncResult:
+    """Sync a single document - run missing agents."""
+    rel_path = str(filepath.relative_to(docs_dir))
+
     try:
-        filepath = filepath.resolve()
-        if not str(filepath).startswith(str(docs_dir.resolve())):
-            raise HTTPException(status_code=400, detail="Invalid path")
+        content = filepath.read_text()
+        frontmatter, body = parse_frontmatter(content)
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid path")
+        return SyncResult(path=rel_path, status="skipped", agents=[])
 
-    if not filepath.exists():
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    content = filepath.read_text()
-    frontmatter, body = parse_frontmatter(content)
-
-    settings = load_settings()
-    config = settings.get("ingestion_config", {})
-    prompts_dir = WHORL_DIR / config.get("prompts_dir", "prompts/ingestion")
-
-    # Get expected vs processed agents
-    expected_agents = {p.stem for p in prompts_dir.glob("*.md")} if prompts_dir.exists() else set()
     processed_agents = set(frontmatter.get("processed", []))
     missing_agents = expected_agents - processed_agents
 
     if not missing_agents:
-        return ReingestResponse(status="skipped", path=request.path, processed=list(processed_agents), skipped=True)
+        return SyncResult(path=rel_path, status="skipped", agents=list(processed_agents))
 
     # Run only missing agents
     prompt_files = [prompts_dir / f"{agent}.md" for agent in missing_agents]
@@ -678,11 +667,43 @@ async def reingest_doc(request: ReingestRequest, _: None = Depends(verify_api_ke
     yaml_frontmatter = yaml.dump(frontmatter, default_flow_style=False, allow_unicode=True)
     filepath.write_text(f"---\n{yaml_frontmatter}---\n\n{body}")
 
-    return ReingestResponse(status="reingested", path=request.path, processed=all_processed)
+    return SyncResult(path=rel_path, status="processed", agents=all_processed)
+
+
+@router.post("/sync", response_model=SyncResponse)
+async def sync_docs(_: None = Depends(verify_password)):
+    """Sync all documents - run missing ingestion agents on each."""
+    docs_dir = get_docs_dir()
+    settings = load_settings()
+    config = settings.get("ingestion_config", {})
+    prompts_dir = WHORL_DIR / config.get("prompts_dir", "prompts/ingestion")
+
+    # Get expected agents
+    expected_agents = {p.stem for p in prompts_dir.glob("*.md")} if prompts_dir.exists() else set()
+
+    if not expected_agents:
+        return SyncResponse(total=0, processed=0, skipped=0, results=[])
+
+    # Find all markdown docs
+    doc_files = list(docs_dir.glob("**/*.md"))
+
+    if not doc_files:
+        return SyncResponse(total=0, processed=0, skipped=0, results=[])
+
+    # Process docs sequentially to avoid overwhelming the system
+    results = []
+    for filepath in doc_files:
+        result = await sync_single_doc(filepath, docs_dir, prompts_dir, config, expected_agents)
+        results.append(result)
+
+    processed = sum(1 for r in results if r.status == "processed")
+    skipped = sum(1 for r in results if r.status == "skipped")
+
+    return SyncResponse(total=len(results), processed=processed, skipped=skipped, results=results)
 
 
 @router.get("/settings")
-async def get_settings(_: None = Depends(verify_api_key)):
+async def get_settings(_: None = Depends(verify_password)):
     """Get current settings."""
     return load_settings()
 
@@ -693,7 +714,7 @@ async def health():
 
 
 @router.get("/documents")
-async def list_docs(_: None = Depends(verify_api_key)):
+async def list_docs(_: None = Depends(verify_password)):
     """List all documents (recursive)."""
     docs_dir = get_docs_dir()
     docs = []
@@ -714,7 +735,7 @@ async def list_docs(_: None = Depends(verify_api_key)):
 
 
 @router.get("/documents/{path:path}")
-async def get_doc(path: str, _: None = Depends(verify_api_key)):
+async def get_doc(path: str, _: None = Depends(verify_password)):
     """Get a document's content."""
     docs_dir = get_docs_dir()
     filepath = docs_dir / path
@@ -731,16 +752,16 @@ async def get_doc(path: str, _: None = Depends(verify_api_key)):
 @router.get("/download/{path:path}")
 async def download_file(
     path: str,
-    api_key: str | None = None,
-    header_key: str | None = Depends(api_key_header),
+    password: str | None = None,
+    header_password: str | None = Depends(password_header),
 ):
     """Download a file from the docs directory (PDFs, etc)."""
-    # Accept API key from either query param or header (for browser downloads)
-    key = api_key or header_key
-    if not WHORL_API_KEY:
-        raise HTTPException(status_code=500, detail="Server API key not configured")
-    if not key or key != WHORL_API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+    # Accept password from either query param or header (for browser downloads)
+    pwd = password or header_password
+    if not WHORL_PASSWORD:
+        raise HTTPException(status_code=500, detail="Server password not configured")
+    if not pwd or pwd != WHORL_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid password")
 
     docs_dir = get_docs_dir()
     filepath = docs_dir / path
@@ -759,7 +780,7 @@ async def download_file(
 
 
 @router.get("/library")
-async def list_library(_: None = Depends(verify_api_key)):
+async def list_library(_: None = Depends(verify_password)):
     """List files in the library folder."""
     library_dir = get_docs_dir() / "library"
     if not library_dir.exists():
