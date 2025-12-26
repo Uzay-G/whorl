@@ -221,27 +221,26 @@ def search_docs(query_str: str, limit: int = 10, context: int = 2, exclude: list
             continue
         try:
             data = json.loads(line)
-        except json.JSONDecodeError:
+            msg_type = data.get("type")
+            if msg_type not in ("match", "context"):
+                continue
+
+            d = data.get("data", {})
+            path = d.get("path", {}).get("text")
+            lines_data = d.get("lines", {})
+            line_text = lines_data.get("text", "").strip() if isinstance(lines_data, dict) else ""
+            line_num = d.get("line_number", 0)
+
+            if not path or not line_text:
+                continue
+
+            if path not in matches:
+                matches[path] = {"lines": [], "match_count": 0}
+            matches[path]["lines"].append((line_num, line_text))
+            if msg_type == "match":
+                matches[path]["match_count"] += 1
+        except (json.JSONDecodeError, KeyError, TypeError):
             continue
-
-        if data["type"] == "match":
-            path = data["data"]["path"]["text"]
-            line_text = data["data"]["lines"]["text"].strip()
-            line_num = data["data"]["line_number"]
-
-            if path not in matches:
-                matches[path] = {"lines": [], "match_count": 0}
-            matches[path]["lines"].append((line_num, line_text))
-            matches[path]["match_count"] += 1
-
-        elif data["type"] == "context":
-            path = data["data"]["path"]["text"]
-            line_text = data["data"]["lines"]["text"].strip()
-            line_num = data["data"]["line_number"]
-
-            if path not in matches:
-                matches[path] = {"lines": [], "match_count": 0}
-            matches[path]["lines"].append((line_num, line_text))
 
     # Build results
     results = []
