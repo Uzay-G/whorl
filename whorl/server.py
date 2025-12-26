@@ -388,10 +388,15 @@ async def health():
 async def list_docs(_: None = Depends(verify_password)):
     """List all documents (recursive)."""
     docs_dir = get_docs_dir()
+    if not docs_dir.exists():
+        return {"docs": []}
     docs = []
     for filepath in docs_dir.glob("**/*.md"):
-        content = filepath.read_text()
-        frontmatter, body = parse_frontmatter(content)
+        try:
+            content = filepath.read_text(errors="replace")
+            frontmatter, body = parse_frontmatter(content)
+        except Exception:
+            frontmatter = {}
         # Use relative path from docs_dir
         rel_path = filepath.relative_to(docs_dir)
         docs.append({
