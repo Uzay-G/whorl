@@ -35,7 +35,7 @@ from whorl.lib.utils import (
 load_dotenv()
 
 # Constants
-WHORL_DIR = Path.home() / ".whorl"
+WHORL_DIR = Path(os.environ.get("WHORL_HOME", Path.home() / ".whorl"))
 SETTINGS_PATH = WHORL_DIR / "settings.json"
 HASH_INDEX_PATH = WHORL_DIR / "hash-index.json"
 FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"

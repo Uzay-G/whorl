@@ -10,7 +10,7 @@ class IngestRequest(BaseModel):
     content: str
     metadata: dict[str, Any] | None = None
     title: str | None = None
-    process: bool = False
+    process: bool = True
 
 
 class IngestResponse(BaseModel):

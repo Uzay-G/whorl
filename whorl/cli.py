@@ -12,7 +12,7 @@ from pathlib import Path
 import httpx
 import yaml
 
-WHORL_DIR = Path.home() / ".whorl"
+WHORL_DIR = Path(os.environ.get("WHORL_HOME", Path.home() / ".whorl"))
 SETTINGS_PATH = WHORL_DIR / "settings.json"
 
 
@@ -112,13 +112,19 @@ async def run_sync(api_url: str, password: str):
             sys.exit(1)
 
 
+TEXT_EXTENSIONS = {".md", ".txt", ".text", ".markdown"}
+
+
 async def run_upload(args, password: str):
     """Run upload command."""
-    pattern = "*.md" if args.flat else "**/*.md"
-    files = [f for f in args.directory.glob(pattern) if not matches_any(f, args.exclude)]
+    pattern = "*" if args.flat else "**/*"
+    files = [
+        f for f in args.directory.glob(pattern)
+        if f.is_file() and f.suffix.lower() in TEXT_EXTENSIONS and not matches_any(f, args.exclude)
+    ]
 
     if not files:
-        print(f"No .md files found in {args.directory}")
+        print(f"No text files found in {args.directory}")
         return
 
     print(f"Uploading {len(files)} file(s) from {args.directory}")
@@ -180,7 +186,7 @@ def main():
 
     # Upload command
     upload_parser = subparsers.add_parser("upload", help="Upload markdown files")
-    upload_parser.add_argument("directory", type=Path, help="Directory containing .md files")
+    upload_parser.add_argument("directory", type=Path, help="Directory containing text files (.md, .txt)")
     upload_parser.add_argument("--flat", "-f", action="store_true", help="Don't search recursively")
     upload_parser.add_argument("--process", "-p", action="store_true", help="Run ingestion agents")
     upload_parser.add_argument("--exclude", "-e", action="append", default=[], metavar="PATTERN",

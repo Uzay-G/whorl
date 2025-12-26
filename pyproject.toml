@@ -1,5 +1,5 @@
 [project]
-name = "whorl"
+name = "whorled"
 version = "0.1.0"
 description = "Personal knowledge ingestion server"
 readme = "README.md"
