@@ -64,7 +64,7 @@ async def upload_file(client: httpx.AsyncClient, filepath: Path, api_url: str, p
 
     try:
         resp = await client.post(
-            f"{api_url}/ingest",
+            f"{api_url}/api/ingest",
             json={"content": body, "title": title, "metadata": metadata, "process": process},
             headers={"X-Password": password},
             timeout=600 if process else 30,
@@ -90,7 +90,7 @@ async def run_sync(api_url: str, password: str):
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.post(
-                f"{api_url}/sync",
+                f"{api_url}/api/sync",
                 headers={"X-Password": password},
                 timeout=1800,  # 30 min timeout for large collections
             )
@@ -174,6 +174,163 @@ def cmd_server(args):
     uvicorn.run("whorl.server:app", host=args.host, port=args.port, reload=args.reload)
 
 
+DEFAULT_SETTINGS = {
+    "docs_dir": "docs",
+    "api_base": "http://localhost:8000",
+    "ingestion_config": {
+        "prompts_dir": "prompts/ingestion",
+        "model": "sonnet",
+        "max_turns": 50
+    },
+    "search_config": {
+        "prompt": "prompts/search.md",
+        "model": "sonnet",
+        "max_turns": 25,
+        "exclude": []
+    }
+}
+
+DEFAULT_PROMPTS = {
+    "summarize": '''---
+model: sonnet
+max_turns: 10
+---
+You are processing a document at {filepath}.
+
+Read the file, then update its YAML frontmatter to add:
+- summary: a 1-2 sentence summary
+- tags: relevant tags as a list
+
+Use bash to read and str_replace_editor to update the file.
+''',
+    "tasks": '''---
+model: sonnet
+max_turns: 15
+---
+You are processing a document at {filepath}.
+
+Read the file and extract any todos, tasks, or action items.
+Append them to tasks.md in the same directory (create if needed).
+Format: "- [ ] task description (from: filename)"
+''',
+    "media": '''---
+model: sonnet
+max_turns: 15
+---
+You are processing a document at {filepath}.
+
+Read the file and extract any media recommendations (books, movies, articles, music, etc).
+Append them to media.md in the same directory (create if needed).
+Format: "- **type**: title - context/notes"
+''',
+    "ideas": '''---
+model: sonnet
+max_turns: 15
+---
+You are processing a document at {filepath}.
+
+Read the file and extract any interesting ideas, insights, or things worth exploring.
+Append them to ideas.md in the same directory (create if needed).
+Format: "- idea description (from: filename)"
+'''
+}
+
+DEFAULT_INDEX = '''# Whorl
+
+Welcome to your personal knowledge base.
+
+## Quick Links
+
+[[tasks.md]]
+[[media.md]]
+[[ideas.md]]
+'''
+
+DEFAULT_SEARCH_PROMPT = '''---
+model: sonnet
+max_turns: 25
+---
+You are a search assistant for a personal knowledge base at {docs_dir}.
+
+Use bash to search files (rg, cat, ls) and answer the user's question.
+Synthesize information from multiple documents if needed.
+'''
+
+
+def cmd_init(args):
+    """Initialize whorl with default configuration."""
+    import getpass
+
+    print("Whorl Setup")
+    print("=" * 40)
+
+    # Check if already initialized
+    if SETTINGS_PATH.exists():
+        resp = input(f"\n{SETTINGS_PATH} already exists. Overwrite? [y/N] ").strip().lower()
+        if resp != 'y':
+            print("Keeping existing settings.")
+        else:
+            _write_settings()
+    else:
+        _write_settings()
+
+    # Password
+    print("\n" + "-" * 40)
+    password = getpass.getpass("Set password (leave empty to skip): ")
+    if password:
+        with open(SETTINGS_PATH) as f:
+            settings = json.load(f)
+        settings["password"] = password
+        with open(SETTINGS_PATH, "w") as f:
+            json.dump(settings, f, indent=2)
+        print("Password saved to settings.json")
+
+    # Prompts
+    print("\n" + "-" * 40)
+    prompts_dir = WHORL_DIR / "prompts" / "ingestion"
+    resp = input(f"Set up default ingestion prompts in {prompts_dir}? [Y/n] ").strip().lower()
+    if resp != 'n':
+        prompts_dir.mkdir(parents=True, exist_ok=True)
+        for name, content in DEFAULT_PROMPTS.items():
+            prompt_file = prompts_dir / f"{name}.md"
+            if prompt_file.exists():
+                print(f"  Skipping {name}.md (exists)")
+            else:
+                prompt_file.write_text(content)
+                print(f"  Created {name}.md")
+
+        # Search prompt
+        search_prompt = WHORL_DIR / "prompts" / "search.md"
+        if not search_prompt.exists():
+            search_prompt.parent.mkdir(parents=True, exist_ok=True)
+            search_prompt.write_text(DEFAULT_SEARCH_PROMPT)
+            print(f"  Created search.md")
+
+    # Index
+    print("\n" + "-" * 40)
+    docs_dir = WHORL_DIR / "docs"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    index_file = docs_dir / "index.md"
+    resp = input(f"Create {index_file}? [Y/n] ").strip().lower()
+    if resp != 'n':
+        if index_file.exists():
+            print("  Skipping (exists)")
+        else:
+            index_file.write_text(DEFAULT_INDEX)
+            print("  Created index.md")
+
+    print("\n" + "=" * 40)
+    print("Done! Run 'whorl server' to start.")
+
+
+def _write_settings():
+    """Write default settings."""
+    WHORL_DIR.mkdir(parents=True, exist_ok=True)
+    with open(SETTINGS_PATH, "w") as f:
+        json.dump(DEFAULT_SETTINGS, f, indent=2)
+    print(f"Created {SETTINGS_PATH}")
+
+
 def main():
     settings = load_settings()
     default_url = settings.get("api_base", "http://localhost:8000")
@@ -205,6 +362,10 @@ def main():
     server_parser.add_argument("--port", type=int, default=8000, help="Port to bind (default: 8000)")
     server_parser.add_argument("--reload", action="store_true", help="Enable auto-reload for development")
     server_parser.set_defaults(func=cmd_server)
+
+    # Init command
+    init_parser = subparsers.add_parser("init", help="Initialize whorl with default configuration")
+    init_parser.set_defaults(func=cmd_init)
 
     args = parser.parse_args()
     args.func(args)

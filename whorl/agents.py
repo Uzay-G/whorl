@@ -150,6 +150,11 @@ async def run_single_ingestion_agent(content: str, filepath: Path, prompt_path: 
         model = prompt_frontmatter.get("model", config.get("model", "sonnet"))
         max_turns = prompt_frontmatter.get("max_turns", config.get("max_turns", 50))
 
+        # Truncate very large content to avoid token limits (~150k chars = ~40k tokens)
+        max_content_chars = 150000
+        if len(content) > max_content_chars:
+            content = content[:max_content_chars] + f"\n\n[truncated - was {len(content)} chars]"
+
         client = anthropic.AsyncAnthropic()
 
         await run_agent_loop(
@@ -184,10 +189,23 @@ async def process_doc_with_agents(
     return [name for name in results if name is not None]
 
 
-async def run_search_agent(query_str: str, prompt_path: Path, config: dict, cwd: str) -> str:
+DEFAULT_SEARCH_PROMPT = """You are a search assistant for a personal knowledge base at {docs_dir}.
+
+Use bash to search files (rg, cat, ls) and answer the user's question.
+Synthesize information from multiple documents if needed.
+Cite sources when referencing specific documents.
+"""
+
+
+async def run_search_agent(query_str: str, prompt_path: Path | None, config: dict, cwd: str) -> str:
     """Run the search agent to answer a query."""
-    prompt_raw = prompt_path.read_text()
-    prompt_frontmatter, prompt_body = parse_frontmatter(prompt_raw)
+    if prompt_path and prompt_path.exists():
+        prompt_raw = prompt_path.read_text()
+        prompt_frontmatter, prompt_body = parse_frontmatter(prompt_raw)
+    else:
+        prompt_frontmatter = {}
+        prompt_body = DEFAULT_SEARCH_PROMPT
+
     system_prompt = prompt_body.format(docs_dir=cwd)
 
     # Config from frontmatter, fall back to global config

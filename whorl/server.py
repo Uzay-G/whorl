@@ -39,7 +39,6 @@ WHORL_DIR = Path(os.environ.get("WHORL_HOME", Path.home() / ".whorl"))
 SETTINGS_PATH = WHORL_DIR / "settings.json"
 HASH_INDEX_PATH = WHORL_DIR / "hash-index.json"
 FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"
-WHORL_PASSWORD = os.environ.get("WHORL_PASSWORD")
 
 # Global state
 router = APIRouter()
@@ -68,15 +67,21 @@ def compute_content_hash(content: str) -> str:
     return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
+def get_password() -> str | None:
+    """Get password from env var or settings."""
+    return os.environ.get("WHORL_PASSWORD") or load_settings().get("password")
+
+
 # Auth
 password_header = APIKeyHeader(name="X-Password", auto_error=False)
 
 
 async def verify_password(password: str | None = Depends(password_header)):
     """Verify password from header."""
-    if not WHORL_PASSWORD:
+    expected = get_password()
+    if not expected:
         raise HTTPException(status_code=500, detail="Server password not configured")
-    if not password or password != WHORL_PASSWORD:
+    if not password or password != expected:
         raise HTTPException(status_code=401, detail="Invalid password")
 
 
@@ -228,8 +233,8 @@ async def ingest(request: IngestRequest, _: None = Depends(verify_password)):
     return IngestResponse(id=doc_id, path=filepath.name, content_hash=content_hash)
 
 
-@router.post("/search", response_model=SearchResponse, tags=["mcp"])
-async def search(request: SearchRequest, _: None = Depends(verify_password)):
+@router.post("/text_search", response_model=SearchResponse, tags=["mcp"])
+async def text_search(request: SearchRequest, _: None = Depends(verify_password)):
     """Full text search over the knowledge base."""
     settings = load_settings()
     exclude = settings.get("search_config", {}).get("exclude", [])
@@ -426,9 +431,10 @@ async def download_file(
     """Download a file from the docs directory (PDFs, etc)."""
     # Accept password from either query param or header (for browser downloads)
     pwd = password or header_password
-    if not WHORL_PASSWORD:
+    expected = get_password()
+    if not expected:
         raise HTTPException(status_code=500, detail="Server password not configured")
-    if not pwd or pwd != WHORL_PASSWORD:
+    if not pwd or pwd != expected:
         raise HTTPException(status_code=401, detail="Invalid password")
 
     docs_dir = get_docs_dir()

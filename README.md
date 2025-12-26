@@ -9,39 +9,28 @@ Whorl is designed to be simple, living in markdown files on your system, and the
 It is self-hosted, meaning that to have an AI use it, you need to run it from some public IP or endpoint, and then the mcp url is at `/mcp`.
 
 
-## Installation
+## Getting started
+
+
+Install:
 
 ```bash
-# Clone and install
-{pip install, uv tool install} whorled
+pip install whorled
+# or
+uv tool install whorled
 ```
 
-## Configuration
 
-Create `~/.whorl/settings.json`:
+Setup default configuration:
 
-```json
-{
-  "docs_dir": "docs",
-  "api_base": "http://localhost:8000",
-  "ingestion_config": {
-    "prompts_dir": "prompts/ingestion",
-    "model": "sonnet",
-    "max_turns": 50
-  },
-  "search_config": {
-    "prompt": "prompts/search.md",
-    "model": "sonnet",
-    "max_turns": 25,
-    "exclude": []
-  }
-}
+```
+whorl init
+
 ```
 
-Set your password in `.env` or environment:
+If you want AI features, set your anthropic API key in `.env` or environment:
 
 ```bash
-export WHORL_PASSWORD="your-secret-password"
 export ANTHROPIC_API_KEY="your-anthropic-key"  # for AI features
 ```
 
@@ -57,65 +46,62 @@ The web UI will be available at `http://localhost:8000`.
 
 Now you will want to upload data to Whorl.
 
-It is all stored in `~/.whorl/docs`, or `$WHORL_HOME_DIR/docs` in any kind of flat or foldered structure you want, so you can also just move files there.
+It is all stored in `~/.whorl/docs` (or `$WHORL_HOME/docs`) in any kind of flat or foldered structure you want, so you can also just move files there.
 
-If you have a folder with your notes, journals, etc... for this you can use the CLI, eg:
+If you have a folder with your notes, journals, etc... you can use the CLI:
 
-example command
+```bash
+whorl upload ~/notes --context "personal-notes"
+```
 
-Otherwise, we recommend using an agent, eg claude code, with instructions on the whorl server, or just moving files into the docs.
+Otherwise, use an agent with the whorl MCP server, or just move files into the docs directory.
 
-Add API format here for agent.
+For agents, the ingest API is:
+
+```bash
+curl -X POST http://localhost:8000/api/ingest \
+  -H "Content-Type: application/json" \
+  -H "X-Password: $WHORL_PASSWORD" \
+  -d '{"content": "Your note content here", "title": "Note Title", "metadata": {}}'
+```
 
 
 ## Workflows
 
 You can configure automated workflows that agents execute whenever you upload to whorl. These agents run bash commands on your files, so be careful with your data!
 
-You can add my defaults using `whorl add-defaults`, which has:
+You can add some defaults using `whorl init`, which sets up:
 
 - automatically summarizing and tagging new notes
-- extracting references to todos and tasks into a task.md file
-- gathering references to media into media.md
-- collecting patterns of ideas into media.md
+- extracting todos and tasks into `tasks.md`
+- gathering media references into `media.md`
+- collecting ideas into `ideas.md`
 
-(implement this command, which also adds index.md)
-
-Then, in `docs/index.md`, this has what renders on the whorl homepage. For me, it has references to the above files:
+Then, in `docs/index.md`, you can reference these files (renders on the whorl homepage):
 
 ```
 [[ideas.md]]
-
 [[media.md]]
-
 [[tasks.md]]
 ```
 
-As you can see this is very flexible, go wild! And let me know what you find useful, I've just started experimenting with this.
+This is very flexible - go wild! Let me know what you find useful, I've just started experimenting with this.
 
 ## CLI Usage
 
-document upload, sync, server,
+```bash
+whorl server                     # start server on :8000
+whorl server --port 3000         # custom port
+whorl server --reload            # dev mode with auto-reload
 
+whorl upload <dir>               # upload text files from directory
+whorl upload <dir> -f            # flat (non-recursive)
+whorl upload <dir> -e "*.draft"  # exclude pattern
+whorl upload <dir> -c "source"   # add source context
 
-arguments, be concise, clear, minimal
-
-## API Endpoints
-
-All endpoints require `X-Password` header.
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/ingest` | POST | Ingest new content |
-| `/api/search` | POST | Full-text search |
-| `/api/agent_search` | POST | AI-powered search |
-| `/api/documents` | GET | List all documents |
-| `/api/documents/{path}` | GET | Get document content |
-| `/api/update` | POST | Update a document |
-| `/api/delete` | POST | Delete a document |
-| `/api/sync` | POST | Run missing agents on all docs |
-| `/api/bash` | POST | Run bash commands in docs dir |
-| `/api/health` | GET | Health check (no auth) |
+whorl sync                       # run missing agents on all docs
+whorl init                       # set up default prompts and index
+```
 
 ## MCP Integration
 
@@ -139,11 +125,13 @@ Add to your Claude MCP configuration (e.g. `~/.claude/claude_desktop_config.json
 
 Available MCP tools:
 - `ingest` - Add content to knowledge base
-- `search` - Full-text search
-- `agent_search` - AI-powered semantic search
+- `text_search` - Full-text search
+- `agent_search` - AI search
 - `bash` - Run commands in the docs directory
 
-## Ingestion Agents
+You can add something to your global system prompt with the MCP, and then tell your chat assistant to use these tools when it might benefit from context about you.
+
+## Custom Ingestion Agents
 
 Create markdown prompts in `~/.whorl/prompts/ingestion/` to process documents during ingestion. Each prompt file becomes an agent that runs on ingested content.
 
@@ -159,29 +147,8 @@ You are a document summarizer. Given the document at {filepath}, create a summar
 Use the bash and str_replace_editor tools to read the document and create a summary.
 ```
 
-## Building the Frontend
 
-```bash
-cd frontend
-npm install
-npm run build
-```
-
-## Project Structure
-
-```
-whorl/
-├── whorl/
-│   ├── server.py      # FastAPI server with MCP integration
-│   ├── models.py      # Pydantic request/response models
-│   ├── agents.py      # Agent loop and ingestion/search agents
-│   ├── cli.py         # CLI tool
-│   └── lib/
-│       ├── utils.py       # Hash index, frontmatter, path validation
-│       └── text_edit.py   # Text editor tool for agents
-├── frontend/          # Vue.js web UI
-└── pyproject.toml
-```
+Feel free to contribute! Note because this was a quick side project I was pretty lax on supervision with claude code, which was very useful.
 
 ## License
 
