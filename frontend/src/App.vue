@@ -21,6 +21,7 @@ const loading = ref(false)
 const searchQuery = ref('')
 const searchResults = ref<Array<{ id: string; path: string; title: string | null; snippet: string }>>([])
 const authenticated = ref(false)
+const checkingAuth = ref(true)
 const apiKeyInput = ref('')
 const authError = ref('')
 const showEditor = ref(false)
@@ -28,6 +29,8 @@ const editorTitle = ref('')
 const editorContent = ref('')
 const saving = ref(false)
 const editingDoc = ref<Doc | null>(null)
+const shareStatus = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
+const sidebarOpen = ref(false)
 
 const filteredDocs = computed(() => {
   if (!filter.value) return docs.value
@@ -69,8 +72,11 @@ async function loadDocs() {
   loading.value = false
 }
 
-async function selectDoc(doc: Doc) {
+async function selectDoc(doc: Doc, pushUrl = true) {
   selectedDoc.value = doc
+  showEditor.value = false
+  sidebarOpen.value = false
+  if (pushUrl) updateUrl(doc.path)
   loading.value = true
   try {
     const content = await getDocContent(doc.path)
@@ -84,10 +90,11 @@ async function selectDoc(doc: Doc) {
   loading.value = false
 }
 
-function goHome() {
+function goHome(pushUrl = true) {
   selectedDoc.value = null
   docContent.value = ''
   showEditor.value = false
+  if (pushUrl) updateUrl(null)
 }
 
 function openEditor() {
@@ -179,11 +186,101 @@ async function handleDelete() {
   }
 }
 
-onMounted(() => {
+function getDocPathFromUrl(): string | null {
+  const path = window.location.pathname
+  if (path.startsWith('/d/')) {
+    return decodeURIComponent(path.slice(3))
+  }
+  return null
+}
+
+function getAddParams(): { title: string; content: string; url: string } | null {
+  if (window.location.pathname !== '/add') return null
+  const params = new URLSearchParams(window.location.search)
+  const content = params.get('content') || params.get('text') || ''
+  const title = params.get('title') || ''
+  const url = params.get('url') || ''
+  if (!content && !title) return null
+  return { title, content, url }
+}
+
+function getShareParams(): { title: string; text: string; url: string } | null {
+  if (window.location.pathname !== '/share') return null
+  const params = new URLSearchParams(window.location.search)
+  const text = params.get('text') || ''
+  const title = params.get('title') || ''
+  const url = params.get('url') || ''
+  if (!text && !url) return null
+  return { title, text, url }
+}
+
+function updateUrl(docPath: string | null) {
+  const url = docPath ? `/d/${encodeURIComponent(docPath)}` : '/'
+  window.history.pushState({}, '', url)
+}
+
+async function loadDocFromUrl() {
+  const docPath = getDocPathFromUrl()
+  if (docPath && docs.value.length) {
+    const doc = docs.value.find(d => d.path === docPath)
+    if (doc) {
+      await selectDoc(doc, false)
+    }
+  }
+}
+
+onMounted(async () => {
   // Check if we have a stored API key
   if (getApiKey()) {
-    loadDocs()
+    await loadDocs()
+
+    // Check for /share (instant save from mobile share sheet)
+    const shareParams = getShareParams()
+    if (shareParams) {
+      shareStatus.value = 'saving'
+      const { title, text, url } = shareParams
+      const now = new Date()
+      const autoTitle = title || `Note ${now.toLocaleDateString()} ${now.toLocaleTimeString()}`
+      const content = url ? (text ? `${text}\n\n${url}` : url) : text
+      try {
+        await ingest(content, autoTitle)
+        shareStatus.value = 'saved'
+        await loadDocs()
+        setTimeout(() => {
+          shareStatus.value = 'idle'
+          window.history.replaceState({}, '', '/')
+        }, 1500)
+      } catch {
+        shareStatus.value = 'error'
+      }
+    }
+    // Check for /add bookmarklet params
+    else {
+      const addParams = getAddParams()
+      if (addParams) {
+        const { title, content, url } = addParams
+        const body = url ? `${content}\n\n---\nSource: ${url}` : content
+        editorTitle.value = title
+        editorContent.value = body.trim()
+        showEditor.value = true
+        window.history.replaceState({}, '', '/')
+      } else {
+        await loadDocFromUrl()
+      }
+    }
   }
+  checkingAuth.value = false
+
+  // Handle browser back/forward
+  window.addEventListener('popstate', () => {
+    const docPath = getDocPathFromUrl()
+    if (docPath) {
+      const doc = docs.value.find(d => d.path === docPath)
+      if (doc) selectDoc(doc, false)
+    } else {
+      goHome(false)
+    }
+  })
 
   // Handle doc-link clicks
   document.addEventListener('click', (e) => {
@@ -199,7 +296,23 @@ onMounted(() => {
 </script>
 
 <template>
-  <div v-if="!authenticated" class="login-screen">
+  <!-- Share overlay -->
+  <div v-if="shareStatus !== 'idle'" class="share-overlay">
+    <div class="share-box">
+      <span v-if="shareStatus === 'saving'">Saving...</span>
+      <span v-else-if="shareStatus === 'saved'">Saved!</span>
+      <span v-else-if="shareStatus === 'error'">Failed to save</span>
+    </div>
+  </div>
+
+  <div v-if="checkingAuth" class="login-screen">
+    <div class="login-box">
+      <h1>whorl</h1>
+      <p class="checking">...</p>
+    </div>
+  </div>
+
+  <div v-else-if="!authenticated" class="login-screen">
     <div class="login-box">
       <h1>whorl</h1>
       <p v-if="authError" class="error">{{ authError }}</p>
@@ -215,9 +328,30 @@ onMounted(() => {
   </div>
 
   <div v-else class="app">
-    <aside class="sidebar">
+    <!-- Mobile header -->
+    <header class="mobile-header">
+      <button class="menu-btn" @click="sidebarOpen = !sidebarOpen">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+          <rect y="3" width="20" height="2"/>
+          <rect y="9" width="20" height="2"/>
+          <rect y="15" width="20" height="2"/>
+        </svg>
+      </button>
+      <h1 @click="goHome()">whorl</h1>
+      <button class="new-btn" @click="openEditor" title="New document">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="8" y1="3" x2="8" y2="13"></line>
+          <line x1="3" y1="8" x2="13" y2="8"></line>
+        </svg>
+      </button>
+    </header>
+
+    <!-- Sidebar backdrop for mobile -->
+    <div v-if="sidebarOpen" class="sidebar-backdrop" @click="sidebarOpen = false"></div>
+
+    <aside class="sidebar" :class="{ open: sidebarOpen }">
       <div class="sidebar-header">
-        <h1 @click="goHome">whorl</h1>
+        <h1 @click="goHome(); sidebarOpen = false">whorl</h1>
         <button class="new-btn" @click="openEditor" title="New document">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="8" y1="3" x2="8" y2="13"></line>
@@ -237,8 +371,9 @@ onMounted(() => {
         <a
           v-for="doc in filteredDocs"
           :key="doc.id"
+          :href="'/d/' + encodeURIComponent(doc.path)"
           :class="{ active: selectedDoc?.id === doc.id }"
-          @click="selectDoc(doc)"
+          @click.prevent="selectDoc(doc)"
         >
           <span class="doc-title">{{ doc.title || doc.path }}</span>
           <span v-if="doc.createdAt" class="doc-date">{{ formatDate(doc.createdAt) }}</span>
@@ -257,7 +392,8 @@ onMounted(() => {
           <a
             v-for="r in searchResults"
             :key="r.id"
-            @click="selectDoc({ id: r.id, path: r.path, title: r.title })"
+            :href="'/d/' + encodeURIComponent(r.path)"
+            @click.prevent="selectDoc({ id: r.id, path: r.path, title: r.title })"
           >
             <strong>{{ r.title || r.path }}</strong>
             <span class="snippet">{{ r.snippet.slice(0, 80) }}...</span>
@@ -833,5 +969,121 @@ article h1 {
 .delete-btn:hover {
   border-color: #a33;
   color: #a33;
+}
+
+.share-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.share-box {
+  background: #2a2520;
+  color: #fff;
+  padding: 2rem 3rem;
+  font-size: 1.25rem;
+  font-family: "Courier Prime", monospace;
+}
+
+/* Mobile header - hidden on desktop */
+.mobile-header {
+  display: none;
+}
+
+.sidebar-backdrop {
+  display: none;
+}
+
+/* Mobile styles */
+@media (max-width: 768px) {
+  .mobile-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem;
+    background: #2a2520;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 200;
+  }
+
+  .mobile-header h1 {
+    font-family: "Courier Prime", monospace;
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: #fff;
+    text-transform: lowercase;
+    cursor: pointer;
+    margin: 0;
+  }
+
+  .menu-btn {
+    background: transparent;
+    border: none;
+    color: #fff;
+    padding: 0.25rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 250;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    width: 280px;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    z-index: 300;
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .content {
+    margin-left: 0;
+    padding: 1.5rem;
+    padding-top: calc(60px + 1.5rem);
+  }
+
+  .content article {
+    max-width: 100%;
+  }
+
+  .editor-panes {
+    flex-direction: column;
+  }
+
+  .editor-preview {
+    border-left: none;
+    border-top: 1px dotted #999;
+    padding-top: 1rem;
+    margin-top: 1rem;
+  }
+
+  .doc-header h1 {
+    font-size: 1.4rem;
+  }
+
+  .doc-meta {
+    flex-wrap: wrap;
+  }
 }
 </style>

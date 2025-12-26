@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Whorl Bookmarklet</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Courier New", monospace;
+      background: #ded5bd;
+      min-height: 100vh;
+      padding: 3rem;
+      color: #333;
+    }
+    .container { max-width: 600px; margin: 0 auto; }
+    h1 { font-size: 1.5rem; margin-bottom: 1rem; }
+    p { margin: 1rem 0; line-height: 1.6; }
+    .bookmarklet {
+      display: inline-block;
+      background: #2a2520;
+      color: #fff;
+      padding: 0.75rem 1.5rem;
+      text-decoration: none;
+      margin: 1rem 0;
+      font-size: 1rem;
+    }
+    .bookmarklet:hover { background: #3a352f; }
+    code {
+      display: block;
+      background: #282828;
+      color: #ebdbb2;
+      padding: 1rem;
+      margin: 1rem 0;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .instructions { background: #d4cbb3; padding: 1.5rem; margin: 1.5rem 0; }
+    .instructions li { margin: 0.5rem 0; margin-left: 1.5rem; }
+    input {
+      width: 100%;
+      padding: 0.5rem;
+      font-family: inherit;
+      font-size: 1rem;
+      border: 1px dotted #333;
+      background: #fff;
+      margin: 0.5rem 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>whorl bookmarklet</h1>
+
+    <p>Drag this to your bookmarks bar:</p>
+
+    <p>
+      <a class="bookmarklet" id="bookmarklet" href="#">+ Save to Whorl</a>
+    </p>
+
+    <div class="instructions">
+      <p><strong>Setup:</strong></p>
+      <ol>
+        <li>Enter your Whorl URL below (where your instance is hosted)</li>
+        <li>Drag the button above to your bookmarks bar</li>
+        <li>On any page, select text (optional) and click the bookmarklet</li>
+      </ol>
+    </div>
+
+    <p><strong>Whorl URL:</strong></p>
+    <input type="text" id="whorlUrl" placeholder="https://your-whorl-instance.com" />
+
+    <p style="margin-top: 2rem;"><strong>How it works:</strong></p>
+    <p>The bookmarklet grabs selected text (or page content), the page title, and URL, then opens your Whorl instance with the content ready to save.</p>
+  </div>
+
+  <script>
+    const bookmarkletCode = `(function(){
+      var s=window.getSelection().toString().trim();
+      var c=s||document.body.innerText.slice(0,8000);
+      var t=document.title;
+      var u=location.href;
+      var w="%WHORL_URL%";
+      var p="/add?title="+encodeURIComponent(t)+"&url="+encodeURIComponent(u)+"&content="+encodeURIComponent(c);
+      window.open(w+p,"_blank");
+    })();`;
+
+    const urlInput = document.getElementById('whorlUrl');
+    const bookmarklet = document.getElementById('bookmarklet');
+
+    // Try to detect current origin
+    const defaultUrl = window.location.origin === 'null' ? '' : window.location.origin;
+    urlInput.value = localStorage.getItem('whorl_bookmarklet_url') || defaultUrl;
+
+    function updateBookmarklet() {
+      const url = urlInput.value.trim().replace(/\/$/, '');
+      const code = bookmarkletCode.replace('%WHORL_URL%', url);
+      bookmarklet.href = 'javascript:' + encodeURIComponent(code);
+      if (url) localStorage.setItem('whorl_bookmarklet_url', url);
+    }
+
+    urlInput.addEventListener('input', updateBookmarklet);
+    updateBookmarklet();
+  </script>
+</body>
+</html>

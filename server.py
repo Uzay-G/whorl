@@ -11,9 +11,11 @@ from typing import Any
 import anthropic
 import yaml
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.security import APIKeyHeader
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from fastmcp import FastMCP
 from fastmcp.server.openapi import RouteMap, MCPType
@@ -744,5 +746,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.include_router(router)
+app.include_router(router, prefix="/api")
 app.mount("/mcp", mcp_app)
+
+# Serve frontend static files
+FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"
+
+
+@app.get("/{full_path:path}")
+async def serve_frontend(request: Request, full_path: str):
+    """Serve frontend SPA - static files or index.html for client-side routing."""
+    # Don't intercept API or MCP routes
+    if full_path.startswith(("api/", "api", "mcp/", "mcp")):
+        raise HTTPException(status_code=404, detail="Not found")
+    # Try to serve static file first
+    file_path = FRONTEND_DIR / full_path
+    if full_path and file_path.exists() and file_path.is_file():
+        return FileResponse(file_path)
+    # Fall back to index.html for SPA routing
+    index_path = FRONTEND_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+    raise HTTPException(status_code=404, detail="Frontend not built. Run 'npm run build' in frontend/")

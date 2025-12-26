@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_URL || '/api'
 const STORAGE_KEY = 'whorl_api_key'
 
 export function getApiKey(): string {
@@ -110,7 +110,7 @@ export async function updateDoc(path: string, content: string, title?: string): 
 export function parseMarkdown(content: string): { frontmatter: Record<string, unknown>; body: string } {
   if (content.startsWith('---')) {
     const parts = content.split('---')
-    if (parts.length >= 3) {
+    if (parts.length >= 3 && parts[1]) {
       const yamlStr = parts[1].trim()
       const body = parts.slice(2).join('---').trim()
       const frontmatter: Record<string, unknown> = {}

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#2a2520"/>
+  <g fill="none" stroke="#ded5bd" stroke-width="24" stroke-linecap="round">
+    <!-- Whorl spiral -->
+    <path d="M256 256
+             C256 220, 290 200, 320 220
+             C360 245, 360 300, 320 340
+             C270 390, 190 380, 160 320
+             C120 240, 150 150, 240 120
+             C350 85, 440 160, 450 280
+             C460 420, 340 500, 200 480
+             C60 455, 20 300, 60 180"/>
+  </g>
+  <circle cx="256" cy="256" r="16" fill="#ded5bd"/>
+</svg>
