@@ -77,6 +77,7 @@ async function loadDocs() {
 async function selectDoc(doc: Doc, pushUrl = true) {
   selectedDoc.value = doc
   showEditor.value = false
+  showLibrary.value = false
   sidebarOpen.value = false
   if (pushUrl) updateUrl(doc.path)
   loading.value = true
@@ -122,6 +123,7 @@ function formatFileSize(bytes: number): string {
 
 function openEditor() {
   showEditor.value = true
+  showLibrary.value = false
   selectedDoc.value = null
   editingDoc.value = null
   editorTitle.value = ''
@@ -260,9 +262,10 @@ async function loadDocFromUrl() {
 }
 
 onMounted(async () => {
-  // Check if we have a stored API key
+  // If we have a stored API key, assume valid and load directly
   if (getApiKey()) {
-    await loadDocs()
+    authenticated.value = true
+    checkingAuth.value = false
 
     // Check for /share (instant save from mobile share sheet)
     const shareParams = getShareParams()
@@ -294,12 +297,16 @@ onMounted(async () => {
         editorContent.value = body.trim()
         showEditor.value = true
         window.history.replaceState({}, '', '/')
+        loadDocs() // fire and forget
       } else {
+        // Need docs loaded before navigating to URL
+        await loadDocs()
         await loadDocFromUrl()
       }
     }
+  } else {
+    checkingAuth.value = false
   }
-  checkingAuth.value = false
 
   // Handle browser back/forward
   window.addEventListener('popstate', () => {
