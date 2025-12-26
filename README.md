@@ -56,7 +56,7 @@ whorl upload ~/notes --context "personal-notes"
 
 Otherwise, use an agent with the whorl MCP server, or just move files into the docs directory.
 
-For agents, the ingest API is:
+The ingest API is:
 
 ```bash
 curl -X POST http://localhost:8000/api/ingest \
@@ -64,6 +64,8 @@ curl -X POST http://localhost:8000/api/ingest \
   -H "X-Password: $WHORL_PASSWORD" \
   -d '{"content": "Your note content here", "title": "Note Title", "metadata": {}}'
 ```
+
+Feel free to tell your agent.
 
 
 ## Workflows
