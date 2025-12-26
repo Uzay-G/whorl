@@ -38,7 +38,7 @@ load_dotenv()
 WHORL_DIR = Path.home() / ".whorl"
 SETTINGS_PATH = WHORL_DIR / "settings.json"
 HASH_INDEX_PATH = WHORL_DIR / "hash-index.json"
-FRONTEND_DIR = Path(__file__).parent.parent / "frontend" / "dist"
+FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"
 WHORL_PASSWORD = os.environ.get("WHORL_PASSWORD")
 
 # Global state
@@ -524,4 +524,4 @@ async def serve_frontend(request: Request, full_path: str):
     index_path = FRONTEND_DIR / "index.html"
     if index_path.exists():
         return FileResponse(index_path)
-    raise HTTPException(status_code=404, detail="Frontend not built. Run 'npm run build' in frontend/")
+    raise HTTPException(status_code=404, detail="Frontend not built")

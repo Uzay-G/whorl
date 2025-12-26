@@ -18,4 +18,7 @@ dependencies = [
 whorl = "whorl.cli:main"
 
 [tool.setuptools]
-packages = ["whorl"]
+packages = ["whorl", "whorl.lib"]
+
+[tool.setuptools.package-data]
+whorl = ["frontend/dist/**/*"]

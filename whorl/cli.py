@@ -162,6 +162,12 @@ def cmd_sync(args):
     asyncio.run(run_sync(args.url, password))
 
 
+def cmd_server(args):
+    """Server command handler."""
+    import uvicorn
+    uvicorn.run("whorl.server:app", host=args.host, port=args.port, reload=args.reload)
+
+
 def main():
     settings = load_settings()
     default_url = settings.get("api_base", "http://localhost:8000")
@@ -186,6 +192,13 @@ def main():
     # Sync command
     sync_parser = subparsers.add_parser("sync", help="Run missing ingestion agents on all documents")
     sync_parser.set_defaults(func=cmd_sync)
+
+    # Server command
+    server_parser = subparsers.add_parser("server", help="Start the whorl server")
+    server_parser.add_argument("--host", default="0.0.0.0", help="Host to bind (default: 0.0.0.0)")
+    server_parser.add_argument("--port", type=int, default=8000, help="Port to bind (default: 8000)")
+    server_parser.add_argument("--reload", action="store_true", help="Enable auto-reload for development")
+    server_parser.set_defaults(func=cmd_server)
 
     args = parser.parse_args()
     args.func(args)
