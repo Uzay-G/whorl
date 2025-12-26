@@ -540,7 +540,6 @@ html, body {
   top: 0;
   left: 0;
   height: 100vh;
-  overflow-y: auto;
   z-index: 100;
 }
 
@@ -603,6 +602,7 @@ html, body {
   flex: 1;
   overflow-y: auto;
   padding: 0.5rem 0;
+  min-height: 0;
 }
 
 .doc-list a {
