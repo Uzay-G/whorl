@@ -768,7 +768,7 @@ async def list_library(_: None = Depends(verify_api_key)):
 
     files = []
     for filepath in library_dir.glob("**/*"):
-        if filepath.is_file():
+        if filepath.is_file() and not filepath.name.startswith("."):
             rel_path = filepath.relative_to(get_docs_dir())
             files.append({
                 "name": filepath.name,

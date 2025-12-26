@@ -120,7 +120,9 @@ export async function listLibrary(): Promise<LibraryFile[]> {
 }
 
 export function getDownloadUrl(path: string): string {
-  return `${API_BASE}/download/${encodeURIComponent(path)}?api_key=${encodeURIComponent(getApiKey())}`
+  // Encode each path segment separately to preserve slashes
+  const encodedPath = path.split('/').map(encodeURIComponent).join('/')
+  return `${API_BASE}/download/${encodedPath}?api_key=${encodeURIComponent(getApiKey())}`
 }
 
 export function parseMarkdown(content: string): { frontmatter: Record<string, unknown>; body: string } {

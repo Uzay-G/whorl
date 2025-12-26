@@ -174,8 +174,15 @@ async function doSearch() {
 }
 
 function renderMarkdown(content: string): string {
-  // Convert [[file.md]] references to links
+  // Convert [[file]] references to links
   const linked = content.replace(/\[\[([^\]]+)\]\]/g, (_, file) => {
+    // Library files (non-.md) get direct download links
+    if (!file.endsWith('.md')) {
+      const url = getDownloadUrl(file)
+      const name = file.split('/').pop() || file
+      return `<a href="${url}" target="_blank" class="file-link">${name}</a>`
+    }
+    // Docs get internal navigation links
     return `<a href="#" class="doc-link" data-path="${file}">${file.replace('.md', '')}</a>`
   })
   return marked(linked) as string
@@ -383,6 +390,10 @@ onMounted(async () => {
         </button>
       </div>
 
+      <button class="library-btn" @click="openLibrary" :class="{ active: showLibrary }">
+        Library
+      </button>
+
       <input
         v-model="filter"
         type="text"
@@ -422,12 +433,6 @@ onMounted(async () => {
             <span class="snippet">{{ r.snippet.slice(0, 80) }}...</span>
           </a>
         </div>
-      </div>
-
-      <div class="sidebar-footer">
-        <button class="library-btn" @click="openLibrary" :class="{ active: showLibrary }">
-          Library
-        </button>
       </div>
     </aside>
 
@@ -752,14 +757,18 @@ article h1 {
   padding: 0;
   color: #ebdbb2;
 }
-.markdown a, .doc-link {
+.markdown a, .doc-link, .file-link {
   color: #333;
   text-decoration: none;
   border-bottom: 1px dotted #333;
   transition: opacity 0.2s;
 }
-.markdown a:hover, .doc-link:hover {
+.markdown a:hover, .doc-link:hover, .file-link:hover {
   opacity: 0.7;
+}
+.file-link::before {
+  content: "↓ ";
+  font-size: 0.85em;
 }
 .markdown blockquote {
   border-left: 2px solid #333;
@@ -1140,13 +1149,10 @@ article h1 {
 }
 
 /* Library styles */
-.sidebar-footer {
-  padding: 0.75rem;
-  border-top: 1px dotted #333;
-}
-
 .library-btn {
-  width: 100%;
+  width: calc(100% - 1.5rem);
+  margin: 0.75rem;
+  margin-bottom: 0;
   padding: 0.5rem 0.75rem;
   background: transparent;
   border: 1px dotted #333;
