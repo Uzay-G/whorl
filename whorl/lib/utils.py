@@ -63,10 +63,10 @@ class HashIndex:
         """Find an existing doc by content hash. O(1) lookup."""
         return self._load().get(content_hash)
 
-    def add(self, content_hash: str, doc_id: str, path: str, processed: list[str] | None = None) -> None:
+    def add(self, content_hash: str, doc_id: str, path: str, processed: list[str] | None = None, is_text: bool = True) -> None:
         """Add a document to the hash index."""
         index = self._load()
-        index[content_hash] = {"id": doc_id, "path": path, "processed": processed or []}
+        index[content_hash] = {"id": doc_id, "path": path, "processed": processed or [], "is_text": is_text}
         self._save()
 
     def remove(self, content_hash: str) -> None:

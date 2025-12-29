@@ -69,8 +69,16 @@ export async function listDocs(): Promise<Doc[]> {
 }
 
 export async function getDocContent(path: string): Promise<string> {
-  const { content } = await request(`/documents/${encodeURIComponent(path)}`)
-  return content
+  const encodedPath = path.split('/').map(encodeURIComponent).join('/')
+  const res = await fetch(`${API_BASE}/documents/${encodedPath}`, {
+    headers: { 'X-Password': getPassword() },
+  })
+  if (res.status === 401) {
+    clearPassword()
+    throw new AuthError()
+  }
+  if (!res.ok) throw new Error(`API error: ${res.status}`)
+  return res.text()
 }
 
 export async function search(query: string, limit = 10): Promise<SearchResult[]> {
@@ -111,9 +119,8 @@ export async function updateDoc(path: string, content: string, title?: string): 
 }
 
 export function getDownloadUrl(path: string): string {
-  // Encode each path segment separately to preserve slashes
   const encodedPath = path.split('/').map(encodeURIComponent).join('/')
-  return `${API_BASE}/download/${encodedPath}?password=${encodeURIComponent(getPassword())}`
+  return `${API_BASE}/documents/${encodedPath}?password=${encodeURIComponent(getPassword())}`
 }
 
 export function parseMarkdown(content: string): { frontmatter: Record<string, unknown>; body: string } {

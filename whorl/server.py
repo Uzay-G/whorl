@@ -358,9 +358,11 @@ async def sync_docs(_: None = Depends(verify_password)):
         # Read content for agents (text representation)
         try:
             content = file_bytes.decode("utf-8")
+            is_text = True
         except UnicodeDecodeError:
             # Binary file - agents can still process via filepath
             content = f"[Binary file: {filepath.name}]"
+            is_text = False
 
         # Run only missing agents
         prompt_files = [prompts_dir / f"{agent}.md" for agent in missing_agents]
@@ -374,7 +376,7 @@ async def sync_docs(_: None = Depends(verify_password)):
         if existing:
             hash_index.set_processed(content_hash, all_processed)
         else:
-            hash_index.add(content_hash, filepath.stem, rel_path, all_processed)
+            hash_index.add(content_hash, filepath.stem, rel_path, all_processed, is_text)
 
         results.append(SyncResult(path=rel_path, status="processed", agents=all_processed))
 
@@ -396,9 +398,11 @@ async def health():
 
 
 def is_text_file(filepath: Path) -> bool:
-    """Check if file is UTF-8 decodable text."""
+    """Check if file is UTF-8 decodable text (samples first 8KB)."""
     try:
-        filepath.read_text(encoding="utf-8")
+        with open(filepath, "rb") as f:
+            chunk = f.read(8192)
+        chunk.decode("utf-8")
         return True
     except (UnicodeDecodeError, Exception):
         return False
@@ -414,29 +418,27 @@ async def list_docs(_: None = Depends(verify_password)):
     for filepath in docs_dir.glob("**/*"):
         if not filepath.is_file() or filepath.name.startswith("."):
             continue
-        rel_path = filepath.relative_to(docs_dir)
+        rel_path = str(filepath.relative_to(docs_dir))
 
-        # Check if text or binary
-        text_file = is_text_file(filepath)
-        frontmatter = {}
-        if text_file:
-            try:
-                content = filepath.read_text(encoding="utf-8")
-                frontmatter, _ = parse_frontmatter(content)
-            except Exception:
-                pass
-
-        # Get info from hash index if available
-        result = hash_index.find_by_path(str(rel_path))
+        # Check hash index first for cached info
+        result = hash_index.find_by_path(rel_path)
         if result:
-            content_hash, entry = result
+            _, entry = result
             doc_id = entry.get("id", filepath.stem)
+            text_file = entry.get("is_text", True)
         else:
             doc_id = filepath.stem
+            text_file = is_text_file(filepath)
+
+        # Parse frontmatter for text files
+        frontmatter = {}
+        if text_file:
+            content = filepath.read_text(encoding="utf-8", errors="replace")
+            frontmatter, _ = parse_frontmatter(content)
 
         docs.append({
             "id": doc_id,
-            "path": str(rel_path),
+            "path": rel_path,
             "title": frontmatter.get("title") or filepath.stem,
             "created_at": frontmatter.get("created_at"),
             "file_type": "text" if text_file else "binary",
@@ -447,33 +449,12 @@ async def list_docs(_: None = Depends(verify_password)):
 
 
 @router.get("/documents/{path:path}")
-async def get_doc(path: str, _: None = Depends(verify_password)):
-    """Get a document's content (text files only)."""
-    docs_dir = get_docs_dir()
-    filepath = docs_dir / path
-
-    try:
-        validate_path_in_dir(filepath, docs_dir)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid path")
-
-    if not filepath.exists():
-        raise HTTPException(status_code=404, detail="Not found")
-
-    try:
-        content = filepath.read_text(encoding="utf-8")
-        return {"content": content}
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="Binary file - use /download endpoint")
-
-
-@router.get("/download/{path:path}")
-async def download_file(
+async def get_doc(
     path: str,
     password: str | None = None,
     header_password: str | None = Depends(password_header),
 ):
-    """Download a file from the docs directory (PDFs, etc)."""
+    """Get file content."""
     # Accept password from either query param or header (for browser downloads)
     pwd = password or header_password
     expected = get_password()
@@ -493,11 +474,7 @@ async def download_file(
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="Not found")
 
-    return FileResponse(
-        filepath,
-        filename=filepath.name,
-        media_type="application/octet-stream",
-    )
+    return FileResponse(filepath)
 
 
 
