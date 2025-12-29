@@ -1,13 +1,10 @@
 # Whorl
 
-Whorl is a system to scalably ingest all your personal documents (journals, writing, things you've read, etc...) and then make these accessible for you and for the AIs you interact with.
+A whorl is an artifact that allows you to make your interactions with chatbots more personalized. It allows you to scalably ingest all your personal documents (journals, writing, things you've read, etc...) into one centralized place and then give the AIs you interact with access that information.
 
-In doing so, you can effectively personalize your interactions with models, by making them query and get information from your whorl. Whorl gives AIs tools to fetch this knowldge, and also uses agents to trigger workflows whenever you add to your whorl - eg keeping lists of tasks, media recommendations, or ideas that might be worth exploring.
+In doing so, you can effectively personalize your interactions with models, by making them query and get information from your whorl. Whorl gives AIs tools to fetch this knowldge, and also optionally uses AI to make your whorl artifact automatically more structured, by triggering workflows whenever you add to your whorl - eg keeping lists of tasks, media recommendations, or ideas that might be worth exploring.
 
-Whorl is designed to be simple, living in markdown files on your system, and then relying on agents to apply transformations, link these files, and enhance them in whatever way you'd like.
-
-It is self-hosted, meaning that to have an AI use it, you need to run it from some public IP or endpoint.
-
+Whorl is designed to be simple, basically just exposing a file system for you to upload things to, an MCP to add to your models, and a frontend for you to access your files.
 
 ## Getting started
 
@@ -109,13 +106,13 @@ whorl init                       # set up default prompts and index
 
 Whorl exposes an MCP server at `/mcp` for integration with Claude Code and other MCP-compatible tools.
 
-Add to your Claude MCP configuration (e.g. `~/.claude/claude_desktop_config.json`):
+Add to your Claude MCP configuration (e.g. `.mcp.json`):
 
 ```json
 {
   "mcpServers": {
     "whorl": {
-      "url": "http://localhost:8000/mcp",
+      "url": "http://localhost:8000/mcp/",
       "type": "http",
       "headers": {
         "X-Password": "your-whorl-password"
