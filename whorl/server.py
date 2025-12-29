@@ -64,9 +64,9 @@ def get_docs_dir() -> Path:
     return WHORL_DIR / docs_path
 
 
-def compute_content_hash(content: str) -> str:
+def compute_content_hash(data: bytes) -> str:
     """Compute SHA256 hash of content."""
-    return hashlib.sha256(content.encode()).hexdigest()[:16]
+    return hashlib.sha256(data).hexdigest()[:16]
 
 
 def get_password() -> str | None:
@@ -181,7 +181,7 @@ async def ingest(request: IngestRequest, _: None = Depends(verify_password)):
     settings = load_settings()
 
     # Compute content hash and check for duplicates
-    content_hash = compute_content_hash(request.content)
+    content_hash = compute_content_hash(request.content.encode())
     existing = hash_index.find(content_hash)
 
     if existing:
@@ -342,7 +342,7 @@ async def sync_docs(_: None = Depends(verify_password)):
         # Compute content hash
         try:
             file_bytes = filepath.read_bytes()
-            content_hash = compute_content_hash(file_bytes.decode("utf-8", errors="replace"))
+            content_hash = compute_content_hash(file_bytes)
         except Exception:
             results.append(SyncResult(path=rel_path, status="skipped", agents=[]))
             continue
@@ -397,14 +397,12 @@ async def health():
     return {"status": "ok"}
 
 
-def is_text_file(filepath: Path) -> bool:
-    """Check if file is UTF-8 decodable text (samples first 8KB)."""
+def is_text_file(data: bytes) -> bool:
+    """Check if data is valid UTF-8 text."""
     try:
-        with open(filepath, "rb") as f:
-            chunk = f.read(8192)
-        chunk.decode("utf-8")
+        data.decode("utf-8")
         return True
-    except (UnicodeDecodeError, Exception):
+    except UnicodeDecodeError:
         return False
 
 
@@ -426,14 +424,21 @@ async def list_docs(_: None = Depends(verify_password)):
             _, entry = result
             doc_id = entry.get("id", filepath.stem)
             text_file = entry.get("is_text", True)
+            file_bytes = None  # Only read if needed
         else:
+            # Lazy index: file not in index, compute and cache
+            file_bytes = filepath.read_bytes()
+            content_hash = compute_content_hash(file_bytes)
+            text_file = is_text_file(file_bytes)
             doc_id = filepath.stem
-            text_file = is_text_file(filepath)
+            hash_index.add(content_hash, doc_id, rel_path, [], text_file)
 
         # Parse frontmatter for text files
         frontmatter = {}
         if text_file:
-            content = filepath.read_text(encoding="utf-8", errors="replace")
+            if file_bytes is None:
+                file_bytes = filepath.read_bytes()
+            content = file_bytes.decode("utf-8")
             frontmatter, _ = parse_frontmatter(content)
 
         docs.append({
