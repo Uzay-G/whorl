@@ -13,6 +13,14 @@ interface Doc {
   size?: number
 }
 
+interface TreeNode {
+  name: string
+  path: string
+  isFolder: boolean
+  children: TreeNode[]
+  doc?: Doc
+}
+
 const docs = ref<Doc[]>([])
 const filter = ref('')
 const selectedDoc = ref<Doc | null>(null)
@@ -33,6 +41,7 @@ const saving = ref(false)
 const editingDoc = ref<Doc | null>(null)
 const shareStatus = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
 const sidebarOpen = ref(false)
+const expandedFolders = ref<Set<string>>(new Set())
 
 const filteredDocs = computed(() => {
   if (!filter.value) return docs.value
@@ -41,6 +50,75 @@ const filteredDocs = computed(() => {
     d.title?.toLowerCase().includes(q) || d.path.toLowerCase().includes(q)
   )
 })
+
+// Build folder tree from flat doc list
+const docTree = computed((): TreeNode[] => {
+  const root: TreeNode[] = []
+  const folderMap = new Map<string, TreeNode>()
+
+  // Sort docs: folders first, then alphabetically
+  const sortedDocs = [...filteredDocs.value].sort((a, b) => {
+    const aDepth = a.path.split('/').length
+    const bDepth = b.path.split('/').length
+    if (aDepth !== bDepth) return aDepth - bDepth
+    return a.path.localeCompare(b.path)
+  })
+
+  for (const doc of sortedDocs) {
+    const parts = doc.path.split('/')
+    const fileName = parts.pop()!
+
+    // Create folder nodes as needed
+    let currentPath = ''
+    let currentLevel = root
+    for (const folder of parts) {
+      currentPath = currentPath ? `${currentPath}/${folder}` : folder
+      let folderNode = folderMap.get(currentPath)
+      if (!folderNode) {
+        folderNode = { name: folder, path: currentPath, isFolder: true, children: [] }
+        folderMap.set(currentPath, folderNode)
+        currentLevel.push(folderNode)
+      }
+      currentLevel = folderNode.children
+    }
+
+    // Add file node
+    currentLevel.push({
+      name: doc.title || fileName,
+      path: doc.path,
+      isFolder: false,
+      children: [],
+      doc
+    })
+  }
+
+  // Sort each level: folders first, then files alphabetically
+  function sortLevel(nodes: TreeNode[]) {
+    nodes.sort((a, b) => {
+      if (a.isFolder !== b.isFolder) return a.isFolder ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+    for (const node of nodes) {
+      if (node.isFolder) sortLevel(node.children)
+    }
+  }
+  sortLevel(root)
+
+  return root
+})
+
+function toggleFolder(path: string) {
+  if (expandedFolders.value.has(path)) {
+    expandedFolders.value.delete(path)
+  } else {
+    expandedFolders.value.add(path)
+  }
+  expandedFolders.value = new Set(expandedFolders.value) // trigger reactivity
+}
+
+function isMarkdownFile(path: string): boolean {
+  return path.endsWith('.md') || path.endsWith('.markdown')
+}
 
 async function login() {
   if (!passwordInput.value.trim()) return
@@ -388,17 +466,55 @@ onMounted(async () => {
       />
 
       <nav class="doc-list">
-        <a
-          v-for="doc in filteredDocs"
-          :key="doc.id"
-          :href="doc.fileType === 'binary' ? getDownloadUrl(doc.path) : '/d/' + encodeURIComponent(doc.path)"
-          :class="{ active: selectedDoc?.id === doc.id, binary: doc.fileType === 'binary' }"
-          @click.prevent="selectDoc(doc)"
-        >
-          <span v-if="doc.fileType === 'binary'" class="file-indicator">↓</span>
-          <span class="doc-title">{{ doc.title || doc.path }}</span>
-          <span v-if="doc.createdAt" class="doc-date">{{ formatDate(doc.createdAt) }}</span>
-        </a>
+        <template v-for="node in docTree" :key="node.path">
+          <div v-if="node.isFolder" class="folder-item">
+            <div class="folder-header" @click="toggleFolder(node.path)">
+              <span class="folder-icon">{{ expandedFolders.has(node.path) ? '▼' : '▶' }}</span>
+              <span class="folder-name">{{ node.name }}</span>
+            </div>
+            <div v-if="expandedFolders.has(node.path)" class="folder-children">
+              <template v-for="child in node.children" :key="child.path">
+                <div v-if="child.isFolder" class="folder-item nested">
+                  <div class="folder-header" @click="toggleFolder(child.path)">
+                    <span class="folder-icon">{{ expandedFolders.has(child.path) ? '▼' : '▶' }}</span>
+                    <span class="folder-name">{{ child.name }}</span>
+                  </div>
+                  <div v-if="expandedFolders.has(child.path)" class="folder-children">
+                    <a
+                      v-for="file in child.children"
+                      :key="file.path"
+                      :href="file.doc?.fileType === 'binary' ? getDownloadUrl(file.path) : '/d/' + encodeURIComponent(file.path)"
+                      :class="{ active: selectedDoc?.path === file.path, binary: file.doc?.fileType === 'binary' }"
+                      @click.prevent="file.doc && selectDoc(file.doc)"
+                    >
+                      <span v-if="file.doc?.fileType === 'binary'" class="file-indicator">↓</span>
+                      <span class="doc-title">{{ file.name }}</span>
+                    </a>
+                  </div>
+                </div>
+                <a
+                  v-else
+                  :href="child.doc?.fileType === 'binary' ? getDownloadUrl(child.path) : '/d/' + encodeURIComponent(child.path)"
+                  :class="{ active: selectedDoc?.path === child.path, binary: child.doc?.fileType === 'binary' }"
+                  @click.prevent="child.doc && selectDoc(child.doc)"
+                >
+                  <span v-if="child.doc?.fileType === 'binary'" class="file-indicator">↓</span>
+                  <span class="doc-title">{{ child.name }}</span>
+                </a>
+              </template>
+            </div>
+          </div>
+          <a
+            v-else
+            :href="node.doc?.fileType === 'binary' ? getDownloadUrl(node.path) : '/d/' + encodeURIComponent(node.path)"
+            :class="{ active: selectedDoc?.path === node.path, binary: node.doc?.fileType === 'binary' }"
+            @click.prevent="node.doc && selectDoc(node.doc)"
+          >
+            <span v-if="node.doc?.fileType === 'binary'" class="file-indicator">↓</span>
+            <span class="doc-title">{{ node.name }}</span>
+            <span v-if="node.doc?.createdAt" class="doc-date">{{ formatDate(node.doc.createdAt) }}</span>
+          </a>
+        </template>
       </nav>
 
       <div class="search-section">
@@ -452,6 +568,7 @@ onMounted(async () => {
       <article v-else-if="selectedDoc">
         <header class="doc-header">
           <h1 v-if="docFrontmatter.title">{{ docFrontmatter.title }}</h1>
+          <h1 v-else>{{ selectedDoc.path.split('/').pop() }}</h1>
           <div class="doc-meta">
             <span v-if="docFrontmatter.created_at" class="meta-item">
               {{ new Date(docFrontmatter.created_at as string).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) }}
@@ -463,7 +580,8 @@ onMounted(async () => {
           </div>
           <p v-if="docFrontmatter.summary" class="doc-summary">{{ docFrontmatter.summary }}</p>
         </header>
-        <div class="markdown" v-html="renderMarkdown(docContent)"></div>
+        <div v-if="isMarkdownFile(selectedDoc.path)" class="markdown" v-html="renderMarkdown(docContent)"></div>
+        <pre v-else class="text-content">{{ docContent }}</pre>
         <div class="doc-actions">
           <button @click="editDoc" class="edit-btn">Edit</button>
           <button @click="handleDelete" class="delete-btn">Delete</button>
@@ -620,6 +738,62 @@ html, body {
 
 .doc-list a.binary {
   opacity: 0.8;
+}
+
+.folder-item {
+  margin: 0;
+}
+
+.folder-item.nested {
+  margin-left: 0;
+}
+
+.folder-header {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background 0.15s;
+}
+
+.folder-header:hover {
+  background: rgba(0,0,0,0.05);
+}
+
+.folder-icon {
+  font-size: 0.6rem;
+  margin-right: 0.5rem;
+  opacity: 0.6;
+}
+
+.folder-name {
+  font-weight: 600;
+}
+
+.folder-children {
+  margin-left: 0.75rem;
+  border-left: 1px dotted #999;
+}
+
+.folder-children a {
+  padding-left: 1rem;
+}
+
+.folder-children .folder-children a {
+  padding-left: 1rem;
+}
+
+.text-content {
+  font-family: "Courier Prime", monospace;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  background: rgba(0,0,0,0.04);
+  padding: 1rem;
+  border-radius: 4px;
+  overflow-x: auto;
 }
 
 .search-section {
