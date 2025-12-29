@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { marked } from 'marked'
-import { listDocs, getDocContent, parseMarkdown, search, getPassword, setPassword, AuthError, ingest, deleteDoc, updateDoc, listLibrary, getDownloadUrl, type LibraryFile } from './api'
+import { listDocs, getDocContent, parseMarkdown, search, getPassword, setPassword, AuthError, ingest, deleteDoc, updateDoc, getDownloadUrl } from './api'
 
 interface Doc {
   id: string
@@ -9,6 +9,8 @@ interface Doc {
   title: string | null
   createdAt?: string
   frontmatter?: Record<string, unknown>
+  fileType?: 'text' | 'binary'
+  size?: number
 }
 
 const docs = ref<Doc[]>([])
@@ -31,8 +33,6 @@ const saving = ref(false)
 const editingDoc = ref<Doc | null>(null)
 const shareStatus = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
 const sidebarOpen = ref(false)
-const showLibrary = ref(false)
-const libraryFiles = ref<LibraryFile[]>([])
 
 const filteredDocs = computed(() => {
   if (!filter.value) return docs.value
@@ -75,9 +75,14 @@ async function loadDocs() {
 }
 
 async function selectDoc(doc: Doc, pushUrl = true) {
+  // Binary files: download directly
+  if (doc.fileType === 'binary') {
+    window.open(getDownloadUrl(doc.path), '_blank')
+    return
+  }
+
   selectedDoc.value = doc
   showEditor.value = false
-  showLibrary.value = false
   sidebarOpen.value = false
   if (pushUrl) updateUrl(doc.path)
   loading.value = true
@@ -97,22 +102,7 @@ function goHome(pushUrl = true) {
   selectedDoc.value = null
   docContent.value = ''
   showEditor.value = false
-  showLibrary.value = false
   if (pushUrl) updateUrl(null)
-}
-
-async function openLibrary() {
-  showLibrary.value = true
-  showEditor.value = false
-  selectedDoc.value = null
-  sidebarOpen.value = false
-  loading.value = true
-  try {
-    libraryFiles.value = await listLibrary()
-  } catch (e) {
-    console.error('Failed to load library:', e)
-  }
-  loading.value = false
 }
 
 function formatFileSize(bytes: number): string {
@@ -123,7 +113,6 @@ function formatFileSize(bytes: number): string {
 
 function openEditor() {
   showEditor.value = true
-  showLibrary.value = false
   selectedDoc.value = null
   editingDoc.value = null
   editorTitle.value = ''
@@ -397,10 +386,6 @@ onMounted(async () => {
         </button>
       </div>
 
-      <button class="library-btn" @click="openLibrary" :class="{ active: showLibrary }">
-        Library
-      </button>
-
       <input
         v-model="filter"
         type="text"
@@ -412,10 +397,11 @@ onMounted(async () => {
         <a
           v-for="doc in filteredDocs"
           :key="doc.id"
-          :href="'/d/' + encodeURIComponent(doc.path)"
-          :class="{ active: selectedDoc?.id === doc.id }"
+          :href="doc.fileType === 'binary' ? getDownloadUrl(doc.path) : '/d/' + encodeURIComponent(doc.path)"
+          :class="{ active: selectedDoc?.id === doc.id, binary: doc.fileType === 'binary' }"
           @click.prevent="selectDoc(doc)"
         >
+          <span v-if="doc.fileType === 'binary'" class="file-indicator">↓</span>
           <span class="doc-title">{{ doc.title || doc.path }}</span>
           <span v-if="doc.createdAt" class="doc-date">{{ formatDate(doc.createdAt) }}</span>
         </a>
@@ -466,29 +452,6 @@ onMounted(async () => {
           <button @click="saveDoc" :disabled="saving" class="save-btn">
             {{ saving ? 'Saving...' : editingDoc ? 'Update' : 'Save' }}
           </button>
-        </div>
-      </article>
-
-      <article v-else-if="showLibrary" class="library-view">
-        <h1>Library</h1>
-        <p class="library-subtitle">Downloaded PDFs and articles</p>
-        <div v-if="libraryFiles.length === 0" class="library-empty">
-          No files in library yet. Media referenced in notes will be downloaded here.
-        </div>
-        <div v-else class="library-list">
-          <a
-            v-for="file in libraryFiles"
-            :key="file.path"
-            :href="getDownloadUrl(file.path)"
-            class="library-item"
-            target="_blank"
-          >
-            <span class="file-icon">{{ file.extension === '.pdf' ? 'PDF' : 'DOC' }}</span>
-            <span class="file-info">
-              <span class="file-name">{{ file.name }}</span>
-              <span class="file-size">{{ formatFileSize(file.size) }}</span>
-            </span>
-          </a>
         </div>
       </article>
 
@@ -653,6 +616,16 @@ html, body {
   color: #888;
   margin-left: 0.5rem;
   flex-shrink: 0;
+}
+
+.file-indicator {
+  font-size: 0.8rem;
+  margin-right: 0.4rem;
+  opacity: 0.6;
+}
+
+.doc-list a.binary {
+  opacity: 0.8;
 }
 
 .search-section {
@@ -1155,101 +1128,4 @@ article h1 {
   }
 }
 
-/* Library styles */
-.library-btn {
-  width: calc(100% - 1.5rem);
-  margin: 0.75rem;
-  margin-bottom: 0;
-  padding: 0.5rem 0.75rem;
-  background: transparent;
-  border: 1px dotted #333;
-  color: #333;
-  font-family: "Courier Prime", monospace;
-  font-size: 0.85rem;
-  cursor: pointer;
-  text-align: left;
-  transition: all 0.2s;
-}
-
-.library-btn:hover {
-  background: rgba(0,0,0,0.05);
-}
-
-.library-btn.active {
-  background: rgba(0,0,0,0.08);
-  font-weight: 700;
-}
-
-.library-view h1 {
-  font-family: "Inter", -apple-system, sans-serif;
-  font-size: 1.6rem;
-  font-weight: 400;
-  margin: 0 0 0.5rem;
-}
-
-.library-subtitle {
-  color: #666;
-  font-size: 0.9rem;
-  margin-bottom: 2rem;
-}
-
-.library-empty {
-  color: #666;
-  font-style: italic;
-  padding: 2rem;
-  background: rgba(0,0,0,0.03);
-  border: 1px dotted #999;
-}
-
-.library-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.library-item {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.75rem 1rem;
-  background: rgba(255,255,255,0.3);
-  border: 1px dotted #999;
-  text-decoration: none;
-  color: #333;
-  transition: all 0.2s;
-}
-
-.library-item:hover {
-  background: rgba(255,255,255,0.5);
-  border-color: #333;
-}
-
-.file-icon {
-  font-size: 0.7rem;
-  font-weight: 700;
-  background: #2a2520;
-  color: #fff;
-  padding: 0.3rem 0.5rem;
-  border-radius: 3px;
-  min-width: 35px;
-  text-align: center;
-}
-
-.file-info {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-width: 0;
-}
-
-.file-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.file-size {
-  font-size: 0.75rem;
-  color: #666;
-}
 </style>
