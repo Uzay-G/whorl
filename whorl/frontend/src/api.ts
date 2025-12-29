@@ -20,6 +20,8 @@ interface Doc {
   createdAt?: string
   content?: string
   frontmatter?: Record<string, unknown>
+  fileType?: 'text' | 'binary'
+  size?: number
 }
 
 interface SearchResult {
@@ -61,7 +63,8 @@ export async function listDocs(): Promise<Doc[]> {
     path: d.path as string,
     title: d.title as string || d.path as string,
     createdAt: d.created_at as string || undefined,
-    frontmatter: d.frontmatter as Record<string, unknown>,
+    fileType: d.file_type as 'text' | 'binary',
+    size: d.size as number,
   }))
 }
 
@@ -71,7 +74,7 @@ export async function getDocContent(path: string): Promise<string> {
 }
 
 export async function search(query: string, limit = 10): Promise<SearchResult[]> {
-  const { results } = await request('/search', {
+  const { results } = await request('/text_search', {
     method: 'POST',
     body: JSON.stringify({ query, limit }),
   })
@@ -105,18 +108,6 @@ export async function updateDoc(path: string, content: string, title?: string): 
     method: 'POST',
     body: JSON.stringify({ path, content, title }),
   })
-}
-
-export interface LibraryFile {
-  name: string
-  path: string
-  size: number
-  extension: string
-}
-
-export async function listLibrary(): Promise<LibraryFile[]> {
-  const { files } = await request('/library')
-  return files
 }
 
 export function getDownloadUrl(path: string): string {

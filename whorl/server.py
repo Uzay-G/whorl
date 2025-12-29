@@ -207,7 +207,6 @@ async def ingest(request: IngestRequest, _: None = Depends(verify_password)):
     frontmatter = {
         "id": doc_id,
         "created_at": timestamp,
-        "content_hash": content_hash,
     }
     if request.title:
         frontmatter["title"] = request.title
@@ -215,8 +214,8 @@ async def ingest(request: IngestRequest, _: None = Depends(verify_password)):
         frontmatter.update(request.metadata)
 
     write_doc_with_frontmatter(filepath, frontmatter, request.content)
-    hash_index.add(content_hash, doc_id, filepath.name)
 
+    agent_names = []
     if request.process:
         config = settings.get("ingestion_config", {})
         prompts_dir = WHORL_DIR / config.get("prompts_dir", "prompts/ingestion")
@@ -226,11 +225,9 @@ async def ingest(request: IngestRequest, _: None = Depends(verify_password)):
                 agent_names = await process_doc_with_agents(
                     filepath, request.content, prompt_files, config, str(docs_dir)
                 )
-                # Update frontmatter with processed agents
-                file_content = filepath.read_text()
-                frontmatter, body = parse_frontmatter(file_content)
-                frontmatter["processed"] = sorted(agent_names)
-                write_doc_with_frontmatter(filepath, frontmatter, body)
+
+    # Store in hash index with processed agents
+    hash_index.add(content_hash, doc_id, filepath.name, sorted(agent_names))
 
     return IngestResponse(id=doc_id, path=filepath.name, content_hash=content_hash)
 
@@ -281,10 +278,10 @@ async def delete_doc(request: DeleteRequest, _: None = Depends(verify_password))
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Remove from hash index
-    content = filepath.read_text()
-    frontmatter, _ = parse_frontmatter(content)
-    if content_hash := frontmatter.get("content_hash"):
+    # Remove from hash index by path lookup
+    result = hash_index.find_by_path(request.path)
+    if result:
+        content_hash, _ = result
         hash_index.remove(content_hash)
 
     filepath.unlink()
@@ -319,7 +316,7 @@ async def update_doc(request: UpdateRequest, _: None = Depends(verify_password))
 
 @router.post("/sync", response_model=SyncResponse)
 async def sync_docs(_: None = Depends(verify_password)):
-    """Sync all documents - run missing ingestion agents on each."""
+    """Sync all files - run missing ingestion agents on each."""
     docs_dir = get_docs_dir()
     settings = load_settings()
     config = settings.get("ingestion_config", {})
@@ -331,41 +328,53 @@ async def sync_docs(_: None = Depends(verify_password)):
     if not expected_agents:
         return SyncResponse(total=0, processed=0, skipped=0, results=[])
 
-    # Find all markdown docs
-    doc_files = list(docs_dir.glob("**/*.md"))
+    # Find all files (not just .md)
+    all_files = [f for f in docs_dir.glob("**/*") if f.is_file() and not f.name.startswith(".")]
 
-    if not doc_files:
+    if not all_files:
         return SyncResponse(total=0, processed=0, skipped=0, results=[])
 
-    # Process docs sequentially to avoid overwhelming the system
+    # Process files sequentially to avoid overwhelming the system
     results = []
-    for filepath in doc_files:
+    for filepath in all_files:
         rel_path = str(filepath.relative_to(docs_dir))
 
+        # Compute content hash
         try:
-            content = filepath.read_text()
-            frontmatter, body = parse_frontmatter(content)
+            file_bytes = filepath.read_bytes()
+            content_hash = compute_content_hash(file_bytes.decode("utf-8", errors="replace"))
         except Exception:
             results.append(SyncResult(path=rel_path, status="skipped", agents=[]))
             continue
 
-        processed_agents = set(frontmatter.get("processed", []))
+        # Check hash index for processed agents
+        processed_agents = set(hash_index.get_processed(content_hash))
         missing_agents = expected_agents - processed_agents
 
         if not missing_agents:
             results.append(SyncResult(path=rel_path, status="skipped", agents=list(processed_agents)))
             continue
 
+        # Read content for agents (text representation)
+        try:
+            content = file_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            # Binary file - agents can still process via filepath
+            content = f"[Binary file: {filepath.name}]"
+
         # Run only missing agents
         prompt_files = [prompts_dir / f"{agent}.md" for agent in missing_agents]
-        new_agents = await process_doc_with_agents(filepath, body, prompt_files, config, str(docs_dir))
+        new_agents = await process_doc_with_agents(filepath, content, prompt_files, config, str(docs_dir))
 
-        # Update frontmatter with all processed agents
+        # Update hash index with all processed agents
         all_processed = sorted(processed_agents | set(new_agents))
-        file_content = filepath.read_text()
-        frontmatter, body = parse_frontmatter(file_content)
-        frontmatter["processed"] = all_processed
-        write_doc_with_frontmatter(filepath, frontmatter, body)
+
+        # Ensure file is in hash index
+        existing = hash_index.find(content_hash)
+        if existing:
+            hash_index.set_processed(content_hash, all_processed)
+        else:
+            hash_index.add(content_hash, filepath.stem, rel_path, all_processed)
 
         results.append(SyncResult(path=rel_path, status="processed", agents=all_processed))
 
@@ -386,27 +395,52 @@ async def health():
     return {"status": "ok"}
 
 
+def is_text_file(filepath: Path) -> bool:
+    """Check if file is UTF-8 decodable text."""
+    try:
+        filepath.read_text(encoding="utf-8")
+        return True
+    except (UnicodeDecodeError, Exception):
+        return False
+
+
 @router.get("/documents")
 async def list_docs(_: None = Depends(verify_password)):
-    """List all documents (recursive)."""
+    """List all files (recursive)."""
     docs_dir = get_docs_dir()
     if not docs_dir.exists():
         return {"docs": []}
     docs = []
-    for filepath in docs_dir.glob("**/*.md"):
-        try:
-            content = filepath.read_text(errors="replace")
-            frontmatter, body = parse_frontmatter(content)
-        except Exception:
-            frontmatter = {}
-        # Use relative path from docs_dir
+    for filepath in docs_dir.glob("**/*"):
+        if not filepath.is_file() or filepath.name.startswith("."):
+            continue
         rel_path = filepath.relative_to(docs_dir)
+
+        # Check if text or binary
+        text_file = is_text_file(filepath)
+        frontmatter = {}
+        if text_file:
+            try:
+                content = filepath.read_text(encoding="utf-8")
+                frontmatter, _ = parse_frontmatter(content)
+            except Exception:
+                pass
+
+        # Get info from hash index if available
+        result = hash_index.find_by_path(str(rel_path))
+        if result:
+            content_hash, entry = result
+            doc_id = entry.get("id", filepath.stem)
+        else:
+            doc_id = filepath.stem
+
         docs.append({
-            "id": frontmatter.get("id", filepath.stem),
+            "id": doc_id,
             "path": str(rel_path),
-            "title": frontmatter.get("title"),
+            "title": frontmatter.get("title") or filepath.stem,
             "created_at": frontmatter.get("created_at"),
-            "frontmatter": frontmatter,
+            "file_type": "text" if text_file else "binary",
+            "size": filepath.stat().st_size,
         })
     docs.sort(key=lambda d: d.get("created_at") or "", reverse=True)
     return {"docs": docs}
@@ -414,7 +448,7 @@ async def list_docs(_: None = Depends(verify_password)):
 
 @router.get("/documents/{path:path}")
 async def get_doc(path: str, _: None = Depends(verify_password)):
-    """Get a document's content."""
+    """Get a document's content (text files only)."""
     docs_dir = get_docs_dir()
     filepath = docs_dir / path
 
@@ -426,7 +460,11 @@ async def get_doc(path: str, _: None = Depends(verify_password)):
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="Not found")
 
-    return {"content": filepath.read_text()}
+    try:
+        content = filepath.read_text(encoding="utf-8")
+        return {"content": content}
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Binary file - use /download endpoint")
 
 
 @router.get("/download/{path:path}")
@@ -462,25 +500,6 @@ async def download_file(
     )
 
 
-@router.get("/library")
-async def list_library(_: None = Depends(verify_password)):
-    """List files in the library folder."""
-    library_dir = get_docs_dir() / "library"
-    if not library_dir.exists():
-        return {"files": []}
-
-    files = []
-    for filepath in library_dir.glob("**/*"):
-        if filepath.is_file() and not filepath.name.startswith("."):
-            rel_path = filepath.relative_to(get_docs_dir())
-            files.append({
-                "name": filepath.name,
-                "path": str(rel_path),
-                "size": filepath.stat().st_size,
-                "extension": filepath.suffix.lower(),
-            })
-    files.sort(key=lambda f: f["name"].lower())
-    return {"files": files}
 
 
 # MCP setup

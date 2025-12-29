@@ -63,10 +63,10 @@ class HashIndex:
         """Find an existing doc by content hash. O(1) lookup."""
         return self._load().get(content_hash)
 
-    def add(self, content_hash: str, doc_id: str, path: str) -> None:
+    def add(self, content_hash: str, doc_id: str, path: str, processed: list[str] | None = None) -> None:
         """Add a document to the hash index."""
         index = self._load()
-        index[content_hash] = {"id": doc_id, "path": path}
+        index[content_hash] = {"id": doc_id, "path": path, "processed": processed or []}
         self._save()
 
     def remove(self, content_hash: str) -> None:
@@ -75,3 +75,22 @@ class HashIndex:
         if content_hash in index:
             del index[content_hash]
             self._save()
+
+    def get_processed(self, content_hash: str) -> list[str]:
+        """Get list of agents that have processed this content."""
+        entry = self.find(content_hash)
+        return entry.get("processed", []) if entry else []
+
+    def set_processed(self, content_hash: str, agents: list[str]) -> None:
+        """Update the processed agents list for a content hash."""
+        index = self._load()
+        if content_hash in index:
+            index[content_hash]["processed"] = agents
+            self._save()
+
+    def find_by_path(self, path: str) -> tuple[str, dict] | None:
+        """Find entry by path. Returns (hash, entry) or None."""
+        for h, entry in self._load().items():
+            if entry.get("path") == path:
+                return h, entry
+        return None
