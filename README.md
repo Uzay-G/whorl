@@ -39,6 +39,25 @@ whorl server
 
 The web UI will be available at `http://localhost:8000`.
 
+## Authentication
+
+By default, if no password is configured, Whorl allows unauthenticated access. This is convenient for local development.
+
+To enable authentication, set a password via environment variable or settings:
+
+```bash
+export WHORL_PASSWORD="your-password"
+```
+
+Or add to `~/.whorl/settings.json`:
+```json
+{
+  "password": "your-password"
+}
+```
+
+**Important**: Always set a password when deploying Whorl on a public server.
+
 ## Ingestion
 
 Now you will want to upload data to Whorl.

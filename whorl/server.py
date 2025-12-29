@@ -79,10 +79,10 @@ password_header = APIKeyHeader(name="X-Password", auto_error=False)
 
 
 async def verify_password(password: str | None = Depends(password_header)):
-    """Verify password from header."""
+    """Verify password from header. If no password is configured, allow access."""
     expected = get_password()
     if not expected:
-        raise HTTPException(status_code=500, detail="Server password not configured")
+        return  # No password configured - allow access
     if not password or password != expected:
         raise HTTPException(status_code=401, detail="Invalid password")
 
@@ -461,12 +461,11 @@ async def get_doc(
 ):
     """Get file content."""
     # Accept password from either query param or header (for browser downloads)
-    pwd = password or header_password
     expected = get_password()
-    if not expected:
-        raise HTTPException(status_code=500, detail="Server password not configured")
-    if not pwd or pwd != expected:
-        raise HTTPException(status_code=401, detail="Invalid password")
+    if expected:
+        pwd = password or header_password
+        if not pwd or pwd != expected:
+            raise HTTPException(status_code=401, detail="Invalid password")
 
     docs_dir = get_docs_dir()
     filepath = docs_dir / path
