@@ -1,0 +1,14 @@
+{
+  "name": "whorl",
+  "owner": {
+    "name": "uzpg"
+  },
+  "plugins": [
+    {
+      "name": "whorl",
+      "source": "./",
+      "description": "Skills for whorl - a personal knowledge ingestion system",
+      "version": "0.1.0"
+    }
+  ]
+}

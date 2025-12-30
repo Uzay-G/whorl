@@ -1,10 +1,10 @@
 # Whorl
 
-A whorl is an artifact that allows you to make your interactions with chatbots more personalized. It allows you to scalably ingest all your personal documents (journals, writing, things you've read, etc...) into one centralized place and then give the AIs you interact with access that information.
+A whorl is a tool that allows you to make your interactions with chatbots more personalized. It scalably ingest all your personal documents (journals, writing, things you've read, etc...) into one centralized place (a *whorl*) and then give the AIs you interact with access that information.
 
 In doing so, you can effectively personalize your interactions with models, by making them query and get information from your whorl. Whorl gives AIs tools to fetch this knowldge, and also optionally uses AI to make your whorl artifact automatically more structured, by triggering workflows whenever you add to your whorl - eg keeping lists of tasks, media recommendations, or ideas that might be worth exploring.
 
-Whorl is designed to be simple, basically just exposing a file system for you to upload things to, an MCP to add to your models, and a frontend for you to access your files.
+Whorl is designed to be simple, basically just exposing a file system for you to upload things to, an MCP for your models to call that info, and a frontend for you to access everything.
 
 ## Getting started
 
@@ -83,6 +83,8 @@ curl -X POST http://localhost:8000/api/ingest \
 
 Feel free to tell your agent.
 
+Whorl is also a PWA, so you can add it to your phone and then select text -> share to whorl.
+
 
 ## Workflows
 
@@ -132,6 +134,19 @@ Add to your Claude MCP configuration (e.g. `.mcp.json`):
   "mcpServers": {
     "whorl": {
       "url": "http://localhost:8000/mcp/",
+      "type": "http"
+    }
+  }
+}
+```
+
+If you have authentication enabled, add headers:
+
+```json
+{
+  "mcpServers": {
+    "whorl": {
+      "url": "http://localhost:8000/mcp/",
       "type": "http",
       "headers": {
         "X-Password": "your-whorl-password"
@@ -167,6 +182,22 @@ Use the bash and str_replace_editor tools to read the document and create a summ
 
 
 Feel free to contribute! Note because this was a quick side project I was pretty lax on supervision with claude code, which was very useful. I will soon release a blog with info on how I use whorl.
+
+## Claude Code Plugin
+
+Whorl includes a Claude Code plugin with skills for ingesting content:
+
+```bash
+/plugin marketplace add uzpg/whorl
+/plugin install whorl@whorl
+```
+
+Available skills:
+- **website-crawler** - Crawl and ingest websites into your whorl (uses `trafilatura`)
+
+Planning on adding more soon.
+
+Once installed, just ask Claude things like "crawl my blog at example.com and add it to whorl" and it will offer to use the skill.
 
 ## License
 

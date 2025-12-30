@@ -1,0 +1,11 @@
+{
+  "name": "whorl",
+  "version": "0.1.0",
+  "description": "Skills for whorl - a personal knowledge ingestion system",
+  "author": {
+    "name": "uzpg"
+  },
+  "skills": [
+    "website-crawler"
+  ]
+}
